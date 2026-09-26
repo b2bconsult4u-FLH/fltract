@@ -11,3 +11,10 @@ section{padding:60px 0}h2{font-size:2rem;color:var(--ink);margin-top:0}.county-g
 footer{background:#132a22;color:#e9eee9;padding:38px 0}.license-block{padding-bottom:14px;margin-bottom:14px;border-bottom:1px solid #ffffff2b}.license-block strong,.license-block span{display:block}.license-block p{max-width:1000px;margin:.8rem 0 0}.small{font-size:.88rem;color:#c8d2cc}
 @media(max-width:900px){.header-inner{display:block;padding:15px 0}nav{margin-top:10px}.county-grid{grid-template-columns:1fr 1fr}.split,.cards{grid-template-columns:1fr}}
 @media(max-width:560px){.county-grid{grid-template-columns:1fr}.hero{padding:60px 0}nav a{padding:7px 6px;font-size:.78rem}}
+
+.form-wrap{max-width:900px}.form-intro{margin-bottom:28px}.intake-form{background:#fff;border:1px solid #d8d8d2;padding:clamp(20px,4vw,38px);box-shadow:0 6px 20px #0000000a}
+.intake-form fieldset{border:0;border-bottom:1px solid #e3e0d8;margin:0 0 28px;padding:0 0 28px}.intake-form legend{font-size:1.3rem;font-weight:800;color:var(--ink);margin-bottom:18px}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px 22px}.form-grid label{display:flex;flex-direction:column;font-weight:700;color:var(--ink);gap:6px}.form-grid .full{grid-column:1/-1}
+.intake-form input,.intake-form select,.intake-form textarea{width:100%;font:inherit;color:#1e2925;background:#fff;border:1px solid #aeb8b2;border-radius:4px;padding:12px}.intake-form textarea{resize:vertical}.intake-form input:focus,.intake-form select:focus,.intake-form textarea:focus{outline:3px solid #b98b3e55;border-color:var(--green)}
+.form-consent{margin:8px 0 22px}.form-consent label{display:flex;gap:10px;align-items:flex-start}.form-consent input{width:auto;margin-top:6px}.form-submit{border:0;border-radius:5px;background:var(--ink);color:#fff;padding:14px 20px;font-size:1rem;font-weight:800}.form-submit:disabled{opacity:.55;cursor:not-allowed}.form-status{font-size:.9rem;color:var(--muted);margin-top:12px}
+@media(max-width:650px){.form-grid{grid-template-columns:1fr}.form-grid .full{grid-column:auto}.intake-form{padding:20px 16px}}
