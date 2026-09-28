@@ -21,3 +21,8 @@ footer{background:#132a22;color:#e9eee9;padding:38px 0}.license-block{padding-bo
 .required-note{font-size:.9rem;color:var(--muted)}.field-help{margin:-6px 0 0;font-size:.88rem;color:var(--muted)}
 
 .inquiry-disclosure{margin:8px 0 18px;padding:18px 20px;background:#faf6ec;border-left:5px solid var(--gold)}.inquiry-disclosure h3{margin:0 0 8px;color:var(--ink)}.inquiry-disclosure p{margin:0}.contact-rights{margin:10px 0 0 30px;font-size:.9rem;color:var(--muted)}
+
+/* Required-field validation */
+.intake-form input.field-invalid,.intake-form select.field-invalid,.intake-form textarea.field-invalid{border:2px solid #b42318;background:#fff5f4;box-shadow:0 0 0 2px #b4231820}
+.intake-form label.label-invalid{color:#b42318}
+.intake-form input.field-invalid:focus,.intake-form select.field-invalid:focus,.intake-form textarea.field-invalid:focus{outline:3px solid #b4231833;border-color:#b42318}
