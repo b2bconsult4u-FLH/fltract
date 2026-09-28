@@ -9,7 +9,7 @@
 
 <fieldset><legend>3. Your Contact Information</legend><div class="form-grid"><label>First Name *<input type="text" name="first_name" autocomplete="given-name" required></label><label>Last Name *<input type="text" name="last_name" autocomplete="family-name" required></label><label>Email *<input type="email" name="email" autocomplete="email" required></label><label>Phone *<input type="tel" name="phone" autocomplete="tel" inputmode="numeric" pattern="[0-9]{10}" minlength="10" maxlength="10" placeholder="10 digits, numbers only" title="Enter exactly 10 digits, including area code." required></label><label>Preferred Contact Method *<select name="preferred_contact" required><option value="">Select One</option><option>Email</option><option>Phone Call</option><option>Text Message</option><option>No Preference</option></select></label><label>Best Time to Contact <select name="best_contact_time"><option value="">Select One</option><option>Morning</option><option>Afternoon</option><option>Evening</option><option>Anytime</option></select></label><p class="field-help full">Your selection tells us how you prefer to be contacted. You may change your preference or use email at any time.</p></div></fieldset><fieldset><legend>4. A Little More Information</legend><div class="form-grid"><label>How Did You Hear About FLTract? <select name="referral_source"><option value="">Select One</option><option>Google / Search Engine</option><option>AI Search / Assistant</option><option>Tract Desk Article</option><option>Landowner Guide</option><option>Referred by Someone</option><option>Social Media</option><option>Other</option></select></label><label class="full">Anything Else You’d Like Us to Know? <textarea name="details" rows="5" placeholder="Optional — tell us about the property, what you hope to accomplish, or what you are looking for."></textarea></label></div></fieldset>
 <div class="inquiry-disclosure"><h3>About Your Inquiry</h3><p>FLTract is a Florida land and property information and referral resource. William E. McMullen II is a Florida Real Estate Sales Associate (SL3654181) affiliated with FARLESS REAL ESTATE REFERRALS LLC (CQ1034069). He works exclusively by referral and does not personally list properties, conduct showings, negotiate transactions, prepare contracts, or handle closings. When appropriate, your inquiry may be referred to another licensed real estate professional who can assist you.</p></div><div class="form-consent"><label><input type="checkbox" name="contact_consent" value="yes" required><span>I understand the information above and authorize William E. McMullen II to contact me regarding this inquiry using the contact information and contact preference I provided. I understand that submitting this inquiry does not obligate me to buy, sell, list, or enter into a real estate transaction.</span></label><p class="contact-rights">You may change your contact preference or ask us to stop contacting you at any time.</p></div>
-<button class="form-submit" type="submit">Submit Property Inquiry</button><p class="form-status" id="form-status" aria-live="polite">Required fields are marked with an asterisk.</p></form>
+<button class="form-submit" type="submit">Submit Property Inquiry</button><div class="submission-success" id="submission-success" role="status" aria-live="polite" hidden><strong>✓ Inquiry Successfully Submitted</strong><span>Thank you. Your information has been received by FLTract.</span></div><p class="form-status" id="form-status" aria-live="polite">Required fields are marked with an asterisk.</p></form><div class="success-modal" id="success-modal" role="dialog" aria-modal="true" aria-labelledby="success-title" hidden><div class="success-modal-card"><div class="success-check" aria-hidden="true">✓</div><h2 id="success-title">Thank You — Your Inquiry Has Been Received</h2><p>Your property inquiry was successfully submitted to FLTract. We’ll review the information you provided and contact you using your selected contact preference when appropriate.</p><button type="button" class="success-close" id="success-close">Close</button></div></div>
 <p class="notice"><b>Privacy:</b> Please do not submit Social Security numbers, financial account information, passwords, or other sensitive personal information through this form.</p><p class="notice"><b>Source standard:</b> FLTract uses publicly available records and authoritative sources. Material facts are cited and linked to original sources whenever practicable.</p></div></section></main><footer><div class="wrap">
 <div class="license-block">
 <strong>William E. McMullen II</strong>
@@ -24,7 +24,13 @@
   const form=document.getElementById("fltract-intake");
   const status=document.getElementById("form-status");
   const button=form.querySelector(".form-submit");
+  const successBox=document.getElementById("submission-success");
+  const successModal=document.getElementById("success-modal");
+  const successClose=document.getElementById("success-close");
   document.getElementById("source_page").value=window.location.href;
+  successClose.addEventListener("click",function(){successModal.hidden=true;});
+  successModal.addEventListener("click",function(e){if(e.target===successModal) successModal.hidden=true;});
+  document.addEventListener("keydown",function(e){if(e.key==="Escape"&&!successModal.hidden) successModal.hidden=true;});
 
   const requiredFields=[...form.querySelectorAll("[required]")];
 
@@ -83,6 +89,9 @@
       document.getElementById("source_page").value=window.location.href;
       status.innerHTML="<strong>Inquiry received.</strong> Thank you. Your information has been securely submitted.";
       button.textContent="Inquiry Submitted";
+      successBox.hidden=false;
+      successModal.hidden=false;
+      successClose.focus();
     }catch(err){
       status.innerHTML="<strong>We could not submit your inquiry.</strong> Your entries have not been cleared. Please try again.";
       button.disabled=false;
