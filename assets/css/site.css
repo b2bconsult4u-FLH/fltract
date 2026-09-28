@@ -26,3 +26,10 @@ footer{background:#132a22;color:#e9eee9;padding:38px 0}.license-block{padding-bo
 .intake-form input.field-invalid,.intake-form select.field-invalid,.intake-form textarea.field-invalid{border:2px solid #b42318;background:#fff5f4;box-shadow:0 0 0 2px #b4231820}
 .intake-form label.label-invalid{color:#b42318}
 .intake-form input.field-invalid:focus,.intake-form select.field-invalid:focus,.intake-form textarea.field-invalid:focus{outline:3px solid #b4231833;border-color:#b42318}
+
+/* Successful inquiry confirmation */
+.submission-success{margin:18px 0 0;padding:18px 20px;border:2px solid #237a3b;border-radius:6px;background:#edf8f0;color:#155c2b}
+.submission-success[hidden],.success-modal[hidden]{display:none!important}.submission-success strong,.submission-success span{display:block}.submission-success strong{font-size:1.08rem;margin-bottom:3px}
+.success-modal{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;padding:22px;background:#0009}
+.success-modal-card{width:min(580px,100%);background:#fff;border-top:8px solid #237a3b;border-radius:8px;padding:34px;text-align:center;box-shadow:0 18px 60px #0005}
+.success-modal-card h2{margin:.35rem 0 .6rem;color:#155c2b}.success-modal-card p{margin:0 auto 22px;max-width:500px}.success-check{width:58px;height:58px;margin:0 auto 12px;border-radius:50%;display:grid;place-items:center;background:#237a3b;color:#fff;font-size:2rem;font-weight:900}.success-close{border:0;border-radius:5px;background:#237a3b;color:#fff;padding:12px 28px;font:inherit;font-weight:800;cursor:pointer}.success-close:focus{outline:3px solid #237a3b55;outline-offset:3px}
