@@ -972,6 +972,12 @@ export default {
 
 
 
+    const timeframe = clean(input.timeframe, 100);
+    const ownerStatus = clean(input.owner_status, 150);
+    const bestContactTime = clean(input.best_contact_time, 100);
+    const referralSource = clean(input.referral_source, 150);
+    const sourcePage = clean(input.source_page, 1000);
+
 
 
     /* --------------------------------------------------------*
@@ -1591,6 +1597,14 @@ export default {
 
 
 
+            timeframe,
+            owner_status,
+            best_contact_time,
+            referral_source,
+            source_page,
+
+
+
             status,
 
 
@@ -1685,6 +1699,14 @@ export default {
 
             ?,
 
+            ?,
+
+
+
+            ?,
+            ?,
+            ?,
+            ?,
             ?,
 
 
@@ -1788,6 +1810,14 @@ export default {
 
 
           details,
+
+
+
+          timeframe,
+          ownerStatus,
+          bestContactTime,
+          referralSource,
+          sourcePage,
 
 
 
