@@ -12,7 +12,7 @@ export function propertyQuery(input) {
   };
 }
 
-export async function afterInquirySaved({ inquiryId, input, env, ctx, repository }) {
+export async function afterInquirySaved({ inquiryId, input, env, ctx, repository, onPropertyResult }) {
   if (env.PROPERTY_RECORDS_ENABLED !== 'true') return { status: 'disabled' };
   if (!env.PROPERTY_DB && !repository) return { status: 'unavailable', reason: 'property_database_missing' };
   try {
@@ -20,7 +20,9 @@ export async function afterInquirySaved({ inquiryId, input, env, ctx, repository
     const query = propertyQuery(input);
     // One inquiry currently represents one property. Repeated clients get new inquiry IDs.
     const job = await repo.enqueue(inquiryId, 'primary', query);
-    const work = runJob(repo, job).catch(() => {
+    const work = runJob(repo, job).then(async result => {
+      if (onPropertyResult) await onPropertyResult({ inquiryId, propertyKey: job.property_key, result });
+    }).catch(() => {
       // Persisted job can be retried from private operations even if the event write failed.
       console.error('Property-record background processing failed; queued job retained.');
     });
