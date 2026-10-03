@@ -1,0 +1,14 @@
+{
+  "name": "fltract-mini-comps",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-10-03",
+  "workers_dev": false,
+  "vars": { "MINI_COMPS_ENABLED": "false" },
+  "d1_databases": [{ "binding": "MINI_COMP_DB", "database_name": "fltract-mini-comps", "database_id": "REPLACE_WITH_ACTUAL_DATABASE_ID" }],
+  "queues": {
+    "producers": [{ "binding": "MINI_COMP_QUEUE", "queue": "fltract-mini-comps" }],
+    "consumers": [{ "queue": "fltract-mini-comps", "max_batch_size": 5, "max_batch_timeout": 5,
+      "max_concurrency": 5, "max_retries": 5, "retry_delay": 300, "dead_letter_queue": "fltract-mini-comps-failed" }]
+  },
+  "triggers": { "crons": ["*/5 * * * *"] }
+}
