@@ -1,3 +1,5 @@
+import { afterInquirySaved } from '../../modules/property-records/intake-hook.mjs';
+
 const CONSENT_VERSION = "FLTRACT-CONSENT-2026-09-27-V1";
 
 
@@ -488,7 +490,7 @@ export default {
 
 
 
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const origin = request.headers.get("Origin");
     const allowedOrigins = new Set(["https://fltract.com", "https://www.fltract.com"]);
     if (origin && !allowedOrigins.has(origin)) {
@@ -1917,6 +1919,9 @@ export default {
 
 
 
+    // Optional industry module: the core inquiry has already been durably saved.
+    const propertyResearch = await afterInquirySaved({ inquiryId, input, env, ctx });
+
     /* --------------------------------------------------------*
 
 *       CONSENT SNAPSHOT*
@@ -2703,6 +2708,8 @@ We appreciate your contacting FLTract and look forward to serving you.`;
         acknowledgment_email:
 
           acknowledgmentEmailStatus,
+
+        property_research: propertyResearch,
 
 
 
