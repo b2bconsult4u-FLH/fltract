@@ -152,6 +152,7 @@ test('matched intake research automatically stores a report in a separate databa
 test('independently removing Mini Comps leaves core and the property-record integration usable',async()=>{
   const sourceCode=readFileSync(new URL('../../../workers/intake/worker.mjs',import.meta.url),'utf8')
     .replace(/^import.*queueMiniComp.*\n/m,'')
+    .replace("'../../core/client-identity/identity.mjs'",JSON.stringify(new URL('../../../core/client-identity/identity.mjs',import.meta.url).href))
     .replace('    const miniComp = await queueMiniComp({ inquiryId, env });','')
     .replace('      onPropertyResult: payload => afterPropertyResolved({ ...payload, env })','')
     .replace('        mini_comp: miniComp,','')

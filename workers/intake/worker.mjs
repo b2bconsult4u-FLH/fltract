@@ -1,3 +1,4 @@
+import { afterInquirySaved as identifyClient } from '../../core/client-identity/identity.mjs';
 import { queueMiniComp, afterPropertyResolved } from '../../modules/mini-comps/intake-hook.mjs';
 import { afterInquirySaved } from '../../modules/property-records/intake-hook.mjs';
 
@@ -1920,6 +1921,8 @@ export default {
 
 
 
+    const clientIdentity = await identifyClient({ inquiryId, contact: { firstName, lastName, email }, input, env });
+
     // Optional industry module: the core inquiry has already been durably saved.
     const miniComp = await queueMiniComp({ inquiryId, env });
     const propertyResearch = await afterInquirySaved({ inquiryId, input, env, ctx,
@@ -2596,13 +2599,16 @@ FLTract is an information and referral resource. When appropriate, your inquiry 
 
 Please do not send sensitive financial information, passwords, Social Security numbers, or transaction documents through the FLTract contact form.
 
-We appreciate your contacting FLTract and look forward to serving you.`;
+We appreciate your contacting FLTract and look forward to serving you.
+
+Inquiry reference: ${clientIdentity.inquiry_reference}${clientIdentity.client_reference ? `\nClient reference: ${clientIdentity.client_reference}` : ''}`;
 
       const emailHtml = `
         <p>Thank you for contacting FLTract. We have received your property inquiry and will begin the review process using the information you provided.</p>
         <p>FLTract is an information and referral resource. When appropriate, your inquiry will be referred to a licensed real estate professional best suited to the property and circumstances described.</p>
         <p><strong>Please do not send sensitive financial information, passwords, Social Security numbers, or transaction documents through the FLTract contact form.</strong></p>
         <p>We appreciate your contacting FLTract and look forward to serving you.</p>
+        <p>Inquiry reference: ${clientIdentity.inquiry_reference}${clientIdentity.client_reference ? `<br>Client reference: ${clientIdentity.client_reference}` : ''}</p>
       `;
 
       const sendResult = await env.SEND_EMAIL.send({
@@ -2715,6 +2721,10 @@ We appreciate your contacting FLTract and look forward to serving you.`;
 
         property_research: propertyResearch,
         mini_comp: miniComp,
+        client_reference: clientIdentity.client_reference || null,
+        inquiry_reference: clientIdentity.inquiry_reference,
+        client_identity_status: clientIdentity.status,
+        client_continuation_token: clientIdentity.continuation_token || null,
 
 
 

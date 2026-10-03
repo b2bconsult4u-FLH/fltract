@@ -207,8 +207,9 @@ test('replacement intake succeeds when optional module is absent or unavailable,
 });
 test('removing the module hook/import leaves a working core Worker', async () => {
   const source = readFileSync(new URL('../../../workers/intake/worker.mjs', import.meta.url), 'utf8')
-    .replace(/^import.*afterInquirySaved.*\n/m, '')
+    .replace(/^import.*modules\/property-records\/intake-hook\.mjs.*\n/m, '')
     .replace(/^import.*queueMiniComp.*\n/m, '')
+    .replace("'../../core/client-identity/identity.mjs'",JSON.stringify(new URL('../../../core/client-identity/identity.mjs',import.meta.url).href))
     .replace(/    const propertyResearch = await afterInquirySaved\([\s\S]*?\n    \}\);/, '')
     .replace('    const miniComp = await queueMiniComp({ inquiryId, env });', '')
     .replace('        mini_comp: miniComp,', '')
