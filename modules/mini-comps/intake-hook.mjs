@@ -1,5 +1,6 @@
 import { emptyReport } from './engine.mjs';
 import { createRepository } from './repository.mjs';
+import { enqueueComparison } from './dispatch.mjs';
 
 // Durable initial placeholder attaches a report status to every enabled intake.
 export async function queueMiniComp({ inquiryId, propertyKey = 'primary', env, repository }) {
@@ -25,6 +26,10 @@ export async function afterPropertyResolved({ inquiryId, propertyKey = 'primary'
   try {
     repo = repository || createRepository(env.MINI_COMP_DB);
     job = await repo.job(inquiryId,propertyKey);
+    if (env.MINI_COMP_QUEUE_ENABLED === 'true') {
+      if (!env.MINI_COMP_QUEUE) throw new Error('mini_comp_queue_binding_missing');
+      return await enqueueComparison({ inquiryId, propertyKey, result, env, repository: repo });
+    }
     const ready = ['matched','confirmed_property'].includes(result?.status) && result.record && !result.record.restricted;
     const report = ready ? await repo.generate(result.record) : emptyReport('property_match_requires_review');
     if (!ready) report.property_research_reason = result?.reason || 'property_not_matched';
