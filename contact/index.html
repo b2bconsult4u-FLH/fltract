@@ -29,6 +29,7 @@
   const successClose=document.getElementById("success-close");
   const successAnother=document.getElementById("success-another");
   let lastContact=null;
+  let clientContinuationToken="";
   document.getElementById("source_page").value=window.location.href;
   successClose.addEventListener("click",function(){successModal.hidden=true;});
   successAnother.addEventListener("click",function(){
@@ -94,6 +95,8 @@
     const fd=new FormData(form);
     const payload={};
     for(const [key,value] of fd.entries()) payload[key]=value;
+    // Continuity only for this browser session; never a login/account-access credential.
+    if(clientContinuationToken) payload.client_continuation_token=clientContinuationToken;
     payload.consent=fd.get("contact_consent")==="yes";
     delete payload.contact_consent;
 
@@ -110,6 +113,14 @@
         throw new Error(result.error||"Submission failed.");
       }
 
+      clientContinuationToken=typeof result.client_continuation_token==="string" ? result.client_continuation_token : "";
+      const referenceLines=[];
+      [result.client_reference,result.inquiry_reference].forEach(function(value){
+        if(typeof value==="string"&&/^[A-Z0-9-]{1,64}$/.test(value)) referenceLines.push(value);
+      });
+      let references=document.getElementById("submission-references");
+      if(!references){references=document.createElement("span");references.id="submission-references";successBox.appendChild(references);}
+      references.textContent=referenceLines.length ? "Your references: "+referenceLines.join(" · ") : "";
       lastContact={
         first_name:payload.first_name,
         last_name:payload.last_name,
