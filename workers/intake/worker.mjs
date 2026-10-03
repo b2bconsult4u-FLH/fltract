@@ -1,3 +1,4 @@
+import { queueMiniComp, afterPropertyResolved } from '../../modules/mini-comps/intake-hook.mjs';
 import { afterInquirySaved } from '../../modules/property-records/intake-hook.mjs';
 
 const CONSENT_VERSION = "FLTRACT-CONSENT-2026-09-27-V1";
@@ -1920,7 +1921,10 @@ export default {
 
 
     // Optional industry module: the core inquiry has already been durably saved.
-    const propertyResearch = await afterInquirySaved({ inquiryId, input, env, ctx });
+    const miniComp = await queueMiniComp({ inquiryId, env });
+    const propertyResearch = await afterInquirySaved({ inquiryId, input, env, ctx,
+      onPropertyResult: payload => afterPropertyResolved({ ...payload, env })
+    });
 
     /* --------------------------------------------------------*
 
@@ -2710,6 +2714,7 @@ We appreciate your contacting FLTract and look forward to serving you.`;
           acknowledgmentEmailStatus,
 
         property_research: propertyResearch,
+        mini_comp: miniComp,
 
 
 
