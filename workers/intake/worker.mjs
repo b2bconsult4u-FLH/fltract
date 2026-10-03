@@ -2,7 +2,7 @@ import { afterInquirySaved as identifyClient } from '../../core/client-identity/
 import { queueMiniComp, afterPropertyResolved } from '../../modules/mini-comps/intake-hook.mjs';
 import { afterInquirySaved } from '../../modules/property-records/intake-hook.mjs';
 
-const CONSENT_VERSION = "FLTRACT-CONSENT-2026-09-27-V1";
+const CONSENT_VERSION = "FLTRACT-CONSENT-2026-10-03-V2";
 
 
 
@@ -288,6 +288,22 @@ function validEmail(value) {
 
 
 
+async function boundedBody(request) {
+  const reader = request.body?.getReader();
+  if (!reader) throw new Error('INVALID_BODY');
+  const chunks = []; let total = 0;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > 16384) { await reader.cancel(); throw new Error('BODY_TOO_LARGE'); }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total); let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  return new TextDecoder().decode(bytes);
+}
+
 async function readInput(request) {
 
   const contentType =
@@ -328,7 +344,10 @@ async function readInput(request) {
 
   ) {
 
-    return await request.json();
+    const raw = await boundedBody(request);
+    const value = JSON.parse(raw);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('INVALID_BODY');
+    return value;
 
   }
 
@@ -348,9 +367,7 @@ async function readInput(request) {
 
   ) {
 
-    const form =
-
-      await request.formData();
+    const form = new URLSearchParams(await boundedBody(request));
 
 
 
@@ -388,6 +405,12 @@ const INQUIRY_TYPES = [
 
   "Selling Property I Own",
 
+  "Possibly Selling",
+  "Buying Property",
+  "Both Buying and Selling",
+  "General Property Information",
+  "Just Exploring",
+  "Other",
   "Finding Property to Buy",
 
   "Both / Exploring Options",
@@ -572,7 +595,7 @@ export default {
 
         status: "ready",
 
-        public_submissions_enabled: false,
+        public_submissions_enabled: true,
 
         consent_version: CONSENT_VERSION
 
@@ -679,8 +702,8 @@ export default {
     }
 
     catch (error) {
-
-
+      if (error.message === 'BODY_TOO_LARGE') return reply({ok:false,error:'Submission is too large. Please shorten your details.'},413);
+      if (error instanceof SyntaxError || error.message === 'INVALID_BODY') return reply({ok:false,error:'Invalid submission body.'},400);
 
       if (
 
@@ -762,7 +785,7 @@ export default {
 
       clean(
 
-        input.company_website,
+        input.company_website || input.website,
 
         500
 
@@ -892,15 +915,12 @@ export default {
 
 
 
-    const details =
-
-      clean(
-
-        input.details,
-
-        4000
-
-      );
+    const intakeContext = [
+      ['Timeframe', input.timeframe], ['Owner status', input.owner_status],
+      ['Best contact time', input.best_contact_time], ['Referral source', input.referral_source],
+      ['Source page', input.source_page]
+    ].filter(([, value]) => value).map(([label, value]) => `${label}: ${clean(value, 500)}`);
+    const details = clean(input.details, 4000) + (intakeContext.length ? '\n\nIntake context:\n' + intakeContext.join('\n') : '');
 
 
 
@@ -1090,6 +1110,10 @@ export default {
 
 
     const errors = [];
+    if ((preferredContact === 'Phone' || preferredContact === 'Either Email or Phone') && liveCallOptIn !== 1) {
+      errors.push('Please authorize live telephone follow-up or select Email.');
+    }
+    if (phone && !/^[0-9]{10}$/.test(phone)) errors.push('Please enter a 10-digit phone number.');
 
 
 

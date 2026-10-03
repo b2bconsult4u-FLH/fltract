@@ -1,0 +1,14 @@
+{
+  "name": "fltract-intake-5a25",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-10-03",
+  "workers_dev": true,
+  "d1_databases": [{ "binding": "DB", "database_name": "fltractproduction", "database_id": "REPLACE_WITH_VERIFIED_PRODUCTION_DATABASE_ID" }],
+  "send_email": [{ "name": "SEND_EMAIL" }],
+  "vars": {
+    "CLIENT_IDENTITIES_ENABLED": "false",
+    "PROPERTY_RECORDS_ENABLED": "false",
+    "MINI_COMPS_ENABLED": "false",
+    "MINI_COMP_QUEUE_ENABLED": "false"
+  }
+}
