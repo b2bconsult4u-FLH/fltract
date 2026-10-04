@@ -382,7 +382,7 @@ async function readInput(request) {
 
 const INQUIRY_TYPES = [
 
-  "Selling Property I Own",
+  "Selling Property",
 
   "Finding Property to Buy",
 
