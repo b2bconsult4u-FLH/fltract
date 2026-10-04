@@ -551,6 +551,57 @@ a{
   color:#57615d;
 }
 
+.compliance-signals{
+  display:flex;
+  flex-wrap:wrap;
+  gap:12px;
+  margin:10px 0 22px;
+}
+
+.signal{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:9px 12px;
+  border:1px solid #d8d8d2;
+  border-radius:8px;
+  background:#fff;
+  font-weight:800;
+}
+
+.signal-light{
+  font-size:1.45rem;
+  line-height:1;
+}
+
+.signal-light.good{color:var(--good);}
+.signal-light.warning{color:var(--gold);}
+.signal-light.danger{color:var(--danger);}
+.signal-light.muted{color:#7a827e;}
+
+.history-collapse{
+  margin-top:24px;
+  border:1px solid #d8d8d2;
+  background:#fff;
+}
+
+.history-collapse summary{
+  cursor:pointer;
+  padding:18px 20px;
+  font-size:1.25rem;
+  font-weight:900;
+  color:var(--ink);
+  list-style-position:inside;
+}
+
+.history-collapse[open] summary{
+  border-bottom:1px solid #e3e0d8;
+}
+
+.history-collapse-body{
+  padding:18px;
+}
+
 .grid{
   display:grid;
   grid-template-columns:1fr 1fr;
@@ -3255,6 +3306,29 @@ ${esc(clientDetailsDisplay(inquiry.details) || "No additional client details.")}
 Contact Compliance
 </h2>
 
+<div class="compliance-signals">
+
+<div class="signal">
+<span class="signal-light ${phoneStatus.css}" aria-hidden="true">●</span>
+<span>Phone — ${esc(phoneStatus.text)}</span>
+</div>
+
+<div class="signal">
+<span class="signal-light ${emailStatus.css}" aria-hidden="true">●</span>
+<span>Email — ${esc(emailStatus.text)}</span>
+</div>
+
+<div class="signal">
+<span class="signal-light ${textStatus.css}" aria-hidden="true">●</span>
+<span>Text — ${esc(textStatus.text)}</span>
+</div>
+
+</div>
+
+<p class="section-note">
+Traffic-light status is channel-specific. Phone turns yellow when the configured contact window reaches ${esc(warningDays)} days remaining and red when it expires or a do-not-call instruction applies. Gray means no active permission is recorded for that channel.
+</p>
+
 
 <div class="grid">
 
@@ -3747,11 +3821,17 @@ ${referralHtml}
      CONSENT HISTORY
      ====================================================== -->
 
-<h2>
-Consent & Contact Preference History
-</h2>
+<details class="history-collapse">
 
+<summary>
+Consent &amp; Contact Preference History — ${consents.results.length} Record${consents.results.length === 1 ? "" : "s"}
+</summary>
+
+<div class="history-collapse-body">
 ${consentHtml}
+</div>
+
+</details>
 
 `,
 `Inquiry #${inquiry.id} | FLTract Admin`
