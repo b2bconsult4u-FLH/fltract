@@ -871,6 +871,7 @@ JOIN inquiries i
 ON i.id = f.inquiry_id
 WHERE
 f.status = 'Open'
+AND i.archived = 0
 AND f.due_date <= ?
 ORDER BY
 f.due_date ASC,
@@ -2439,6 +2440,172 @@ return redirect(
 
 
 /* ============================================================
+   ARCHIVE / RESTORE INQUIRY
+   ============================================================ */
+
+if (
+request.method === "POST" &&
+/^\/inquiry\/\d+\/archive$/.test(url.pathname)
+) {
+
+if (!sameOriginPost(request)) {
+return new Response(
+"Invalid request origin.",
+{status:403}
+);
+}
+
+const id = idFromPath(url.pathname);
+const form = await request.formData();
+const reason =
+String(form.get("archive_reason") || "")
+.trim()
+.slice(0,2000);
+
+if (!id || !reason) {
+return new Response(
+"An archive reason is required.",
+{status:400}
+);
+}
+
+const inquiry =
+await env.DB.prepare(`
+SELECT id, archived
+FROM inquiries
+WHERE id = ?
+LIMIT 1
+`)
+.bind(id)
+.first();
+
+if (!inquiry) {
+return new Response(
+"Inquiry not found.",
+{status:404}
+);
+}
+
+if (Number(inquiry.archived) !== 1) {
+
+await env.DB.prepare(`
+UPDATE inquiries
+SET
+archived = 1,
+updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
+`)
+.bind(id)
+.run();
+
+await env.DB.prepare(`
+INSERT INTO activity_log (
+inquiry_id,
+activity_type,
+activity_note
+)
+VALUES (
+?,
+'Inquiry Archived',
+?
+)
+`)
+.bind(
+id,
+`Inquiry removed from the active work queue. Reason: ${reason}`
+)
+.run();
+
+}
+
+return redirect(`/inquiry/${id}`);
+
+}
+
+
+if (
+request.method === "POST" &&
+/^\/inquiry\/\d+\/restore$/.test(url.pathname)
+) {
+
+if (!sameOriginPost(request)) {
+return new Response(
+"Invalid request origin.",
+{status:403}
+);
+}
+
+const id = idFromPath(url.pathname);
+const form = await request.formData();
+const reason =
+String(form.get("restore_reason") || "")
+.trim()
+.slice(0,2000);
+
+if (!id) {
+return new Response(
+"Inquiry not found.",
+{status:404}
+);
+}
+
+const inquiry =
+await env.DB.prepare(`
+SELECT id, archived
+FROM inquiries
+WHERE id = ?
+LIMIT 1
+`)
+.bind(id)
+.first();
+
+if (!inquiry) {
+return new Response(
+"Inquiry not found.",
+{status:404}
+);
+}
+
+if (Number(inquiry.archived) === 1) {
+
+await env.DB.prepare(`
+UPDATE inquiries
+SET
+archived = 0,
+updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
+`)
+.bind(id)
+.run();
+
+await env.DB.prepare(`
+INSERT INTO activity_log (
+inquiry_id,
+activity_type,
+activity_note
+)
+VALUES (
+?,
+'Inquiry Restored',
+?
+)
+`)
+.bind(
+id,
+reason
+? `Inquiry restored to the active work queue. Reason: ${reason}`
+: "Inquiry restored to the active work queue."
+)
+.run();
+
+}
+
+return redirect(`/inquiry/${id}`);
+
+}
+
+
+/* ============================================================
    FOLLOW UP DASHBOARD
    ============================================================ */
 
@@ -2468,7 +2635,9 @@ FROM follow_ups f
 JOIN inquiries i
 ON i.id = f.inquiry_id
 
-WHERE f.status = 'Open'
+WHERE
+f.status = 'Open'
+AND i.archived = 0
 
 ORDER BY f.due_date ASC
 `).all();
@@ -3247,6 +3416,17 @@ href="/"
 Inquiry #${esc(inquiry.id)}
 </h1>
 
+${Number(inquiry.archived) === 1
+? `
+<div class="panel followup-overdue">
+<div class="label">ARCHIVED RECORD</div>
+<div class="value">
+This inquiry is preserved for audit/history but is not part of the active FLTract work queue or automatic follow-up reminders.
+</div>
+</div>
+`
+: ""}
+
 
 <div class="grid">
 
@@ -3738,6 +3918,80 @@ Save Status
 
 
 <!-- ======================================================
+     ARCHIVE / RESTORE
+     ====================================================== -->
+
+<div class="panel">
+
+<h2>
+${Number(inquiry.archived) === 1 ? "Restore Inquiry" : "Archive Inquiry"}
+</h2>
+
+${Number(inquiry.archived) === 1
+?
+`
+<p class="section-note">
+This inquiry is archived. Archived records remain in FLTract with their full activity, consent, referral, and follow-up history, but they are removed from the active dashboard and automatic follow-up reminders. Restore the inquiry only if it should return to active work.
+</p>
+
+<form
+method="post"
+action="/inquiry/${id}/restore"
+>
+
+<label>
+<span>Restore Reason (optional)</span>
+<textarea
+name="restore_reason"
+rows="3"
+maxlength="2000"
+placeholder="Example: Archived in error; inquiry is still active."
+></textarea>
+</label>
+
+<div style="margin-top:14px">
+<button type="submit">
+Restore to Active Work Queue
+</button>
+</div>
+
+</form>
+`
+:
+`
+<p class="section-note">
+Use Archive for test, duplicate, invalid, withdrawn, or otherwise inactive inquiries that should leave the daily work queue without being deleted. Archiving preserves the complete record and audit history. Open follow-ups are retained but will not appear in reminders while the inquiry is archived.
+</p>
+
+<form
+method="post"
+action="/inquiry/${id}/archive"
+>
+
+<label>
+<span>Archive Reason *</span>
+<textarea
+name="archive_reason"
+rows="3"
+maxlength="2000"
+required
+placeholder="Example: Development test record — no client action required."
+></textarea>
+</label>
+
+<div style="margin-top:14px">
+<button type="submit">
+Archive Inquiry
+</button>
+</div>
+
+</form>
+`}
+
+</div>
+
+
+<!-- ======================================================
      INTERNAL NOTE
      ====================================================== -->
 
@@ -4025,6 +4279,10 @@ const search =
 url.searchParams.get("q") || "";
 
 
+const showArchived =
+url.searchParams.get("archived") === "1";
+
+
 const today =
 floridaToday();
 
@@ -4057,10 +4315,19 @@ WHERE archived = 0
 .first();
 
 
+const archivedSummary =
+await env.DB.prepare(`
+SELECT COUNT(*) AS archived_count
+FROM inquiries
+WHERE archived = 1
+`)
+.first();
+
+
 let sql = `
 SELECT *
 FROM inquiries
-WHERE archived = 0
+WHERE archived = ${showArchived ? 1 : 0}
 `;
 
 
@@ -4303,10 +4570,23 @@ const html =
 page(`
 
 <h1>
-Property Inquiries
+${showArchived ? "Archived Inquiries" : "Property Inquiries"}
 </h1>
 
+${showArchived
+? `
+<div class="panel">
+<h2>Archived Records</h2>
+<p class="section-note">
+These inquiries are retained for audit, training, and historical reference but are excluded from the active management dashboard and automatic follow-up reminders. Open a record and use Restore Inquiry if it needs to return to active work.
+</p>
+<a class="back" href="/">← Return to active inquiries</a>
+</div>
+`
+: ""}
 
+
+${showArchived ? "" : `
 <div class="panel">
 
 <h2>
@@ -4362,14 +4642,34 @@ The automatic follow-up reminder checks each morning and emails the FLTract offi
 </div>
 
 </div>
+`}
 
 
 <div class="panel">
+
+<div class="action-row" style="margin-bottom:16px">
+<div>
+<strong>${showArchived ? "Archived Records" : "Active Records"}</strong>
+<div class="small">
+${showArchived
+? "Search and review records removed from the active work queue."
+: "Filter the active work queue or open the archive when historical/test records are needed."}
+</div>
+</div>
+
+<a class="back" href="${showArchived ? "/" : "/?archived=1"}">
+${showArchived
+? "← Active Inquiries"
+: `View Archived Records (${Number(archivedSummary?.archived_count || 0)})`}
+</a>
+</div>
 
 <form
 class="filters"
 method="get"
 >
+
+${showArchived ? '<input type="hidden" name="archived" value="1">' : ""}
 
 <input
 name="q"
