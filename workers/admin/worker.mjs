@@ -902,6 +902,64 @@ const PRIORITY_COUNTIES = new Set([
   "Brevard","Indian River","St. Lucie","Martin","Okeechobee"
 ]);
 
+/*
+  FLTract statewide geography.
+  Broad regions follow the familiar statewide directional framework used in
+  Florida destination marketing. Market identities use established Florida
+  geographic brands where they are useful; otherwise the broad region is used.
+  These are FLTract organizational labels, not legal or jurisdictional boundaries.
+*/
+const BROAD_REGION_GROUPS = {
+  "Northwest Florida": ["Escambia","Santa Rosa","Okaloosa","Walton","Holmes","Washington","Bay","Jackson","Calhoun","Gulf","Franklin"],
+  "North Central Florida": ["Gadsden","Liberty","Leon","Wakulla","Jefferson","Madison","Taylor","Hamilton","Suwannee","Lafayette","Columbia","Dixie","Alachua","Gilchrist","Levy"],
+  "Northeast Florida": ["Nassau","Duval","Baker","Clay","St. Johns","Putnam","Flagler","Bradford","Union"],
+  "Central Florida": ["Marion","Lake","Sumter","Seminole","Orange","Osceola","Polk","Hardee","Highlands"],
+  "Central East Florida": ["Volusia","Brevard","Indian River","St. Lucie","Martin","Okeechobee"],
+  "Central West Florida": ["Citrus","Hernando","Pasco","Pinellas","Hillsborough","Manatee","Sarasota"],
+  "Southeast Florida": ["Palm Beach","Broward","Miami-Dade","Monroe"],
+  "Southwest Florida": ["DeSoto","Charlotte","Lee","Glades","Hendry","Collier"]
+};
+
+const MARKET_REGION_GROUPS = {
+  "Emerald Coast": ["Okaloosa","Walton","Bay"],
+  "Forgotten Coast": ["Gulf","Franklin"],
+  "Big Bend": ["Leon","Wakulla","Jefferson","Madison","Taylor","Dixie"],
+  "Suwannee Valley": ["Hamilton","Suwannee","Lafayette","Columbia","Gilchrist"],
+  "First Coast": ["Nassau","Duval","Clay","St. Johns","Flagler"],
+  "Nature Coast": ["Levy","Citrus","Hernando","Pasco"],
+  "Greater Orlando": ["Seminole","Orange","Osceola"],
+  "Florida Heartland": ["Hardee","Highlands","Okeechobee","DeSoto","Glades","Hendry"],
+  "Space Coast": ["Brevard"],
+  "Treasure Coast": ["Indian River","St. Lucie","Martin"],
+  "Sun Coast": ["Pinellas"],
+  "Tampa Bay": ["Hillsborough"],
+  "Cultural Coast": ["Sarasota"],
+  "The Palm Beaches": ["Palm Beach"],
+  "Gold Coast": ["Broward","Miami-Dade"],
+  "Florida Keys": ["Monroe"],
+  "Southwest Florida": ["Charlotte","Lee"],
+  "Paradise Coast": ["Collier"]
+};
+
+const BROAD_REGION_BY_COUNTY = {};
+for (const [region, counties] of Object.entries(BROAD_REGION_GROUPS)) {
+  for (const county of counties) BROAD_REGION_BY_COUNTY[county] = region;
+}
+
+const MARKET_REGION_BY_COUNTY = {};
+for (const [region, counties] of Object.entries(MARKET_REGION_GROUPS)) {
+  for (const county of counties) MARKET_REGION_BY_COUNTY[county] = region;
+}
+
+function geographyForCounty(county) {
+  const broadRegion = BROAD_REGION_BY_COUNTY[county] || "Florida";
+  return {
+    broadRegion,
+    marketRegion: MARKET_REGION_BY_COUNTY[county] || broadRegion
+  };
+}
+
+
 const COUNTY_RESEARCH_ADAPTERS = Object.fromEntries(
   FLORIDA_COUNTIES.map(county => [
     county,
