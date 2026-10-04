@@ -1,0 +1,18 @@
+{
+  "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
+  "name": "fltract-intake-5a25",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-09-27",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "fltractproduction",
+      "database_id": "f2ca6407-6d2d-4c7d-b7d2-5f6e8d96a274"
+    }
+  ],
+  "send_email": [
+    {
+      "name": "SEND_EMAIL"
+    }
+  ]
+}
