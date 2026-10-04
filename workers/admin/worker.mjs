@@ -124,6 +124,135 @@ function sameOriginPost(request) {
 
 
 /* ============================================================
+   CLIENT ACCOUNTS
+   ============================================================ */
+
+let clientSchemaReady = false;
+
+function normalizeClientEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function normalizeClientPhone(value) {
+  return String(value || "").replace(/\D/g, "");
+}
+
+function clientCode(id) {
+  return `FLT-${String(Number(id) || 0).padStart(6, "0")}`;
+}
+
+async function ensureClientSchema(env) {
+  if (clientSchemaReady) return;
+
+  await env.DB.batch([
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS clients (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        first_name TEXT NOT NULL DEFAULT '',
+        last_name TEXT NOT NULL DEFAULT '',
+        email TEXT NOT NULL DEFAULT '',
+        normalized_email TEXT NOT NULL UNIQUE,
+        phone TEXT NOT NULL DEFAULT '',
+        normalized_phone TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS client_inquiries (
+        client_id INTEGER NOT NULL,
+        inquiry_id INTEGER NOT NULL UNIQUE,
+        linked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        link_basis TEXT NOT NULL DEFAULT 'Exact Email',
+        PRIMARY KEY (client_id, inquiry_id)
+      )
+    `),
+    env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_client_inquiries_client
+      ON client_inquiries(client_id)
+    `)
+  ]);
+
+  clientSchemaReady = true;
+}
+
+async function ensureClientForInquiry(env, inquiry) {
+  await ensureClientSchema(env);
+
+  const existing =
+    await env.DB.prepare(`
+      SELECT c.*
+      FROM clients c
+      JOIN client_inquiries ci
+        ON ci.client_id = c.id
+      WHERE ci.inquiry_id = ?
+      LIMIT 1
+    `)
+    .bind(inquiry.id)
+    .first();
+
+  if (existing) {
+    return existing;
+  }
+
+  const normalizedEmail =
+    normalizeClientEmail(inquiry.email);
+
+  if (!normalizedEmail) {
+    return null;
+  }
+
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO clients (
+      first_name,
+      last_name,
+      email,
+      normalized_email,
+      phone,
+      normalized_phone
+    )
+    VALUES (?, ?, ?, ?, ?, ?)
+  `)
+  .bind(
+    inquiry.first_name || "",
+    inquiry.last_name || "",
+    inquiry.email || "",
+    normalizedEmail,
+    inquiry.phone || "",
+    normalizeClientPhone(inquiry.phone)
+  )
+  .run();
+
+  const client =
+    await env.DB.prepare(`
+      SELECT *
+      FROM clients
+      WHERE normalized_email = ?
+      LIMIT 1
+    `)
+    .bind(normalizedEmail)
+    .first();
+
+  if (!client) {
+    return null;
+  }
+
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO client_inquiries (
+      client_id,
+      inquiry_id,
+      link_basis
+    )
+    VALUES (?, ?, 'Exact Email')
+  `)
+  .bind(client.id, inquiry.id)
+  .run();
+
+  return client;
+}
+
+
+/* ============================================================
    FLORIDA DATE / TIME
    ============================================================ */
 
@@ -946,6 +1075,17 @@ status:500
 }
 );
 
+}
+
+try {
+await ensureClientSchema(env);
+}
+catch (error) {
+console.error("Client account schema initialization failed:", error);
+return new Response(
+"Client account database initialization failed.",
+{status:500}
+);
 }
 
 
@@ -2828,6 +2968,514 @@ headers:{
 
 
 /* ============================================================
+   CLIENT ACCOUNT DIRECTORY
+   ============================================================ */
+
+if (
+request.method === "GET" &&
+url.pathname === "/clients"
+) {
+
+const {results = []} =
+await env.DB.prepare(`
+SELECT
+c.*,
+COUNT(ci.inquiry_id) AS inquiry_count,
+SUM(
+  CASE
+    WHEN i.archived = 0
+    THEN 1 ELSE 0
+  END
+) AS active_inquiry_count
+FROM clients c
+LEFT JOIN client_inquiries ci
+  ON ci.client_id = c.id
+LEFT JOIN inquiries i
+  ON i.id = ci.inquiry_id
+GROUP BY c.id
+ORDER BY c.updated_at DESC, c.id DESC
+`).all();
+
+const rows =
+results.length
+?
+results.map(client => `
+<tr>
+<td>
+<a href="/client/${client.id}">
+<strong>${esc(clientCode(client.id))}</strong>
+</a>
+</td>
+<td>
+${esc(client.first_name)} ${esc(client.last_name)}
+</td>
+<td>
+${esc(client.email)}
+</td>
+<td>
+${esc(client.phone)}
+</td>
+<td>
+${esc(client.inquiry_count || 0)}
+</td>
+<td>
+${esc(client.active_inquiry_count || 0)}
+</td>
+</tr>
+`).join("")
+:
+`
+<tr>
+<td colspan="6" class="empty">
+No client accounts have been created yet.
+</td>
+</tr>
+`;
+
+return new Response(
+page(`
+
+<a class="back" href="/">
+← Back to inquiries
+</a>
+
+<div class="panel">
+
+<h1>
+Client Accounts
+</h1>
+
+<p class="section-note">
+A Client Account groups the same person's FLTract inquiries and properties under one permanent Client ID. New intake submissions are automatically linked only when the normalized email address exactly matches an existing client. FLTract does not use fuzzy name matching to merge people automatically.
+</p>
+
+<p class="section-note">
+Use this directory to review a client's complete relationship with FLTract. Archiving one inquiry does not archive the client or the client's other properties.
+</p>
+
+<table>
+<thead>
+<tr>
+<th>Client ID</th>
+<th>Client</th>
+<th>Email</th>
+<th>Phone</th>
+<th>Total Inquiries</th>
+<th>Active</th>
+</tr>
+</thead>
+<tbody>
+${rows}
+</tbody>
+</table>
+
+</div>
+`)
+,
+{
+headers:{
+"content-type":"text/html; charset=utf-8",
+"cache-control":"no-store"
+}
+}
+);
+
+}
+
+
+/* ============================================================
+   CLIENT ACCOUNT DETAIL
+   ============================================================ */
+
+if (
+request.method === "GET" &&
+/^\/client\/\d+$/.test(url.pathname)
+) {
+
+const clientId =
+Number(url.pathname.split("/").filter(Boolean)[1]);
+
+const client =
+await env.DB.prepare(`
+SELECT *
+FROM clients
+WHERE id = ?
+LIMIT 1
+`)
+.bind(clientId)
+.first();
+
+if (!client) {
+return new Response(
+"Client account not found.",
+{status:404}
+);
+}
+
+const inquiries =
+await env.DB.prepare(`
+SELECT
+i.*,
+ci.linked_at,
+ci.link_basis
+FROM client_inquiries ci
+JOIN inquiries i
+  ON i.id = ci.inquiry_id
+WHERE ci.client_id = ?
+ORDER BY i.created_at DESC, i.id DESC
+`)
+.bind(clientId)
+.all();
+
+const latestInquiry =
+inquiries.results[0] || null;
+
+const referrals =
+await env.DB.prepare(`
+SELECT
+r.*,
+i.property_location,
+i.county
+FROM referral_history r
+JOIN client_inquiries ci
+  ON ci.inquiry_id = r.inquiry_id
+JOIN inquiries i
+  ON i.id = r.inquiry_id
+WHERE ci.client_id = ?
+ORDER BY r.created_at DESC, r.id DESC
+`)
+.bind(clientId)
+.all();
+
+const followups =
+await env.DB.prepare(`
+SELECT
+f.*,
+i.property_location
+FROM follow_ups f
+JOIN client_inquiries ci
+  ON ci.inquiry_id = f.inquiry_id
+JOIN inquiries i
+  ON i.id = f.inquiry_id
+WHERE ci.client_id = ?
+ORDER BY f.due_date DESC, f.id DESC
+`)
+.bind(clientId)
+.all();
+
+const activities =
+await env.DB.prepare(`
+SELECT
+a.*,
+i.property_location
+FROM activity_log a
+JOIN client_inquiries ci
+  ON ci.inquiry_id = a.inquiry_id
+JOIN inquiries i
+  ON i.id = a.inquiry_id
+WHERE ci.client_id = ?
+ORDER BY a.created_at DESC, a.id DESC
+LIMIT 100
+`)
+.bind(clientId)
+.all();
+
+const phoneStatus =
+latestInquiry
+? phoneContactStatus(latestInquiry, warningDays)
+: {text:"NO ACTIVE PERMISSION",css:"muted"};
+
+const emailStatus =
+latestInquiry
+? emailContactStatus(latestInquiry)
+: {text:"NO EMAIL PERMISSION",css:"muted"};
+
+const textStatus =
+latestInquiry
+? textContactStatus(latestInquiry)
+: {text:"NO TEXT CONSENT",css:"muted"};
+
+const inquiryRows =
+inquiries.results.length
+?
+inquiries.results.map(i => `
+<tr>
+<td>
+<a href="/inquiry/${i.id}">
+#${esc(i.id)}
+</a>
+</td>
+<td>
+${esc(inquiryTypeDisplay(i.inquiry_type))}
+</td>
+<td>
+${esc(i.property_location || "Not recorded")}
+</td>
+<td>
+${esc(i.county || "")}
+</td>
+<td>
+${esc(i.property_type || "")}
+</td>
+<td>
+${esc(i.status || "")}
+${Number(i.archived) === 1 ? ' <span class="badge muted">Archived</span>' : ""}
+</td>
+</tr>
+`).join("")
+:
+`<tr><td colspan="6" class="empty">No linked inquiries.</td></tr>`;
+
+const referralRows =
+referrals.results.length
+?
+referrals.results.map(r => `
+<tr>
+<td>#${esc(r.inquiry_id)}</td>
+<td>${esc(r.referred_to_name || "")}</td>
+<td>${esc(r.referred_to_company || "")}</td>
+<td>${esc(r.status || "")}</td>
+<td>${esc(r.referral_date ? floridaTime(r.referral_date) : "Prepared / not sent")}</td>
+</tr>
+`).join("")
+:
+`<tr><td colspan="5" class="empty">No referrals recorded.</td></tr>`;
+
+const followupRows =
+followups.results.length
+?
+followups.results.map(f => `
+<tr>
+<td>#${esc(f.inquiry_id)}</td>
+<td>${esc(calendarDate(f.due_date))}</td>
+<td>${esc(f.reason || "")}</td>
+<td>${esc(f.status || "")}</td>
+</tr>
+`).join("")
+:
+`<tr><td colspan="4" class="empty">No follow-ups recorded.</td></tr>`;
+
+const activityRows =
+activities.results.length
+?
+activities.results.map(a => `
+<div class="panel">
+<div class="label">
+${esc(a.activity_type)} — Inquiry #${esc(a.inquiry_id)}
+</div>
+<div class="value note">
+${esc(a.activity_note || "")}
+</div>
+<div class="small" style="margin-top:10px">
+${esc(floridaTime(a.created_at))}
+</div>
+</div>
+`).join("")
+:
+`<div class="panel empty">No activity recorded.</div>`;
+
+return new Response(
+page(`
+
+<a class="back" href="/clients">
+← Back to Client Accounts
+</a>
+
+<div class="panel">
+
+<h1>
+Client ${esc(clientCode(client.id))}
+</h1>
+
+<p class="section-note">
+This is the client's permanent FLTract account. It groups multiple property inquiries, referrals, follow-ups, and activity without combining the underlying inquiry records. Each property/inquiry keeps its own workflow and audit history.
+</p>
+
+<div class="grid">
+
+<div>
+<div class="label">Client</div>
+<div class="value">${esc(client.first_name)} ${esc(client.last_name)}</div>
+</div>
+
+<div>
+<div class="label">Client ID</div>
+<div class="value"><strong>${esc(clientCode(client.id))}</strong></div>
+</div>
+
+<div>
+<div class="label">Email</div>
+<div class="value">${esc(client.email)}</div>
+</div>
+
+<div>
+<div class="label">Phone</div>
+<div class="value">${esc(client.phone || "Not recorded")}</div>
+</div>
+
+<div>
+<div class="label">Created</div>
+<div class="value">${esc(floridaTime(client.created_at))}</div>
+</div>
+
+<div>
+<div class="label">Linked Inquiries</div>
+<div class="value">${esc(inquiries.results.length)}</div>
+</div>
+
+</div>
+
+</div>
+
+
+<div class="panel">
+
+<h2>
+Current Contact Compliance
+</h2>
+
+<p class="section-note">
+These traffic lights reflect the client's most recent linked inquiry. Always open the specific inquiry before making a consequential contact decision because permissions are recorded by channel and preserved with each inquiry.
+</p>
+
+<div class="compliance-signals">
+
+<div class="signal">
+<span class="signal-light ${phoneStatus.css}" aria-hidden="true">●</span>
+<span>Phone — ${esc(phoneStatus.text)}</span>
+</div>
+
+<div class="signal">
+<span class="signal-light ${emailStatus.css}" aria-hidden="true">●</span>
+<span>Email — ${esc(emailStatus.text)}</span>
+</div>
+
+<div class="signal">
+<span class="signal-light ${textStatus.css}" aria-hidden="true">●</span>
+<span>Text — ${esc(textStatus.text)}</span>
+</div>
+
+</div>
+
+</div>
+
+
+<div class="panel">
+
+<h2>
+Properties &amp; Inquiries
+</h2>
+
+<p class="section-note">
+Each row is a separate inquiry/property record belonging to this client. A client can have several active or archived properties at the same time.
+</p>
+
+<table>
+<thead>
+<tr>
+<th>Inquiry</th>
+<th>Type</th>
+<th>Property Location</th>
+<th>County</th>
+<th>Property Type</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+${inquiryRows}
+</tbody>
+</table>
+
+</div>
+
+
+<div class="panel">
+
+<h2>
+Referral History
+</h2>
+
+<p class="section-note">
+This panel shows referrals across all inquiries linked to this client. Sending and approval controls remain on the individual inquiry so the correct property record is always used.
+</p>
+
+<table>
+<thead>
+<tr>
+<th>Inquiry</th>
+<th>Recipient</th>
+<th>Company</th>
+<th>Status</th>
+<th>Referral Date</th>
+</tr>
+</thead>
+<tbody>
+${referralRows}
+</tbody>
+</table>
+
+</div>
+
+
+<div class="panel">
+
+<h2>
+Follow-Ups
+</h2>
+
+<p class="section-note">
+This is a client-wide view of scheduled and completed follow-ups. Complete or reschedule work from the individual inquiry so its audit trail remains precise.
+</p>
+
+<table>
+<thead>
+<tr>
+<th>Inquiry</th>
+<th>Due</th>
+<th>Reason</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+${followupRows}
+</tbody>
+</table>
+
+</div>
+
+
+<details class="history-collapse">
+
+<summary>
+Client Activity History — ${activities.results.length} Recent Record${activities.results.length === 1 ? "" : "s"}
+</summary>
+
+<div class="history-collapse-body">
+
+<p class="section-note">
+This combined history is for reference and training. It brings together notes and workflow events from the client's linked inquiries while preserving the original inquiry-level records.
+</p>
+
+${activityRows}
+
+</div>
+
+</details>
+
+`)
+,
+{
+headers:{
+"content-type":"text/html; charset=utf-8",
+"cache-control":"no-store"
+}
+}
+);
+
+}
+
+
+/* ============================================================
    INQUIRY DETAIL
    ============================================================ */
 
@@ -2859,6 +3507,24 @@ return new Response(
 {status:404}
 );
 
+}
+
+
+let clientAccount = null;
+
+try {
+clientAccount =
+await ensureClientForInquiry(
+env,
+inquiry
+);
+}
+catch (error) {
+console.error(
+"Client account link failed for inquiry",
+id,
+error
+);
 }
 
 
@@ -3615,6 +4281,40 @@ ${esc(clientDetailsDisplay(inquiry.details) || "No additional client details.")}
 </div>
 
 </div>
+
+</div>
+
+
+<div class="panel">
+
+<h2>
+Client Account
+</h2>
+
+<p class="section-note">
+The Client Account groups this person's FLTract property inquiries under one permanent Client ID. Exact normalized email is the automatic match key; FLTract does not automatically merge similar names or other ambiguous matches.
+</p>
+
+${clientAccount
+? `
+<div class="action-row">
+<div>
+<div class="label">Client ID</div>
+<div class="value">
+<strong>${esc(clientCode(clientAccount.id))}</strong>
+</div>
+</div>
+
+<a class="back" href="/client/${clientAccount.id}">
+Open Client Account →
+</a>
+</div>
+`
+: `
+<div class="empty">
+No client account could be linked automatically. Review this record manually before linking it to another person.
+</div>
+`}
 
 </div>
 
@@ -4657,11 +5357,17 @@ ${showArchived
 </div>
 </div>
 
+<div class="action-row">
+<a class="back" href="/clients">
+Client Accounts
+</a>
+
 <a class="back" href="${showArchived ? "/" : "/?archived=1"}">
 ${showArchived
 ? "← Active Inquiries"
 : `View Archived Records (${Number(archivedSummary?.archived_count || 0)})`}
 </a>
+</div>
 </div>
 
 <form
