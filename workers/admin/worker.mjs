@@ -257,6 +257,13 @@ function emailContactStatus(inquiry) {
     };
   }
 
+  if (!inquiry.consent_recorded_at && !inquiry.consent_version) {
+    return {
+      text: "LEGACY — PERMISSION NOT VERIFIED",
+      css: "warning"
+    };
+  }
+
   if (Number(inquiry.marketing_email_opt_in) === 1) {
     return {
       text: "MARKETING EMAIL OK",
@@ -762,6 +769,11 @@ const headers = [
 "County",
 "Property Type",
 "Acreage",
+"Timeframe",
+"Owner Status",
+"Best Contact Time",
+"How Heard About FLTract",
+"Source Page",
 "Improvements",
 "Property Location",
 "Details",
@@ -794,6 +806,11 @@ r.preferred_contact,
 r.county,
 r.property_type,
 r.acreage,
+r.timeframe,
+r.owner_status,
+r.best_contact_time,
+r.referral_source,
+r.source_page,
 r.improvements,
 r.property_location,
 r.details,
@@ -1035,7 +1052,7 @@ return redirect(
 
 
 /* ============================================================
-   REFERRAL HISTORY
+   REFERRAL WORKFLOW — PREPARE
    ============================================================ */
 
 if (
@@ -1052,68 +1069,21 @@ return new Response(
 );
 }
 
+const id = idFromPath(url.pathname);
+const form = await request.formData();
 
-const id =
-idFromPath(url.pathname);
+const name = String(form.get("referred_to_name") || "").trim().slice(0,200);
+const company = String(form.get("referred_to_company") || "").trim().slice(0,200);
+const email = String(form.get("referred_to_email") || "").trim().toLowerCase().slice(0,254);
+const phone = String(form.get("referred_to_phone") || "").trim().slice(0,100);
+const referralNote = String(form.get("referral_note") || "").trim().slice(0,4000);
 
-const form =
-await request.formData();
-
-
-const name =
-String(
-form.get("referred_to_name") || ""
-).trim().slice(0,200);
-
-
-const company =
-String(
-form.get("referred_to_company") || ""
-).trim().slice(0,200);
-
-
-const email =
-String(
-form.get("referred_to_email") || ""
-).trim().slice(0,254);
-
-
-const phone =
-String(
-form.get("referred_to_phone") || ""
-).trim().slice(0,100);
-
-
-const referralStatus =
-String(
-form.get("referral_status") || "Pending"
-).trim().slice(0,100);
-
-
-const referralDate =
-String(
-form.get("referral_date") || ""
-).trim().slice(0,50);
-
-
-const referralNote =
-String(
-form.get("referral_note") || ""
-).trim().slice(0,4000);
-
-
-if (
-!id ||
-(!name && !company)
-) {
-
+if (!id || (!name && !company) || !email || !referralNote) {
 return new Response(
-"Referral requires a name or company.",
+"Referral preparation requires a name or company, email address, and referral message.",
 {status:400}
 );
-
 }
-
 
 await env.DB.prepare(`
 INSERT INTO referral_history (
@@ -1126,10 +1096,7 @@ referral_status,
 referral_date,
 referral_note
 )
-
-VALUES (
-?,?,?,?,?,?,?,?
-)
+VALUES (?,?,?,?,?,'Prepared',NULL,?)
 `)
 .bind(
 id,
@@ -1137,16 +1104,21 @@ name,
 company,
 email,
 phone,
-referralStatus,
-referralDate,
 referralNote
 )
 .run();
 
+const who = company || name;
 
-const who =
-company || name;
-
+await env.DB.prepare(`
+UPDATE inquiries
+SET
+status = 'Referral Prepared',
+updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
+`)
+.bind(id)
+.run();
 
 await env.DB.prepare(`
 INSERT INTO activity_log (
@@ -1154,32 +1126,247 @@ inquiry_id,
 activity_type,
 activity_note
 )
-
 VALUES (
 ?,
-'Referral',
+'Referral Prepared',
 ?
 )
 `)
 .bind(
 id,
-`Referral recorded for ${who}.`
+`Referral communication prepared for ${who}; human approval required before sending.`
 )
 .run();
 
+return redirect(`/inquiry/${id}`);
+
+}
+
+
+/* ============================================================
+   REFERRAL WORKFLOW — APPROVE & SEND
+   ============================================================ */
+
+if (
+request.method === "POST" &&
+/^\/inquiry\/\d+\/referral-send$/.test(
+url.pathname
+)
+) {
+
+if (!sameOriginPost(request)) {
+return new Response(
+"Invalid request origin.",
+{status:403}
+);
+}
+
+if (!env.SEND_EMAIL) {
+return new Response(
+"Email binding SEND_EMAIL is missing.",
+{status:500}
+);
+}
+
+const id = idFromPath(url.pathname);
+const form = await request.formData();
+const referralId = Number(form.get("referral_id"));
+const followupDate = String(form.get("followup_date") || "").trim();
+
+if (
+!id ||
+!Number.isInteger(referralId) ||
+referralId < 1 ||
+!/^\d{4}-\d{2}-\d{2}$/.test(followupDate)
+) {
+return new Response(
+"A valid prepared referral and follow-up date are required.",
+{status:400}
+);
+}
+
+const referral = await env.DB.prepare(`
+SELECT *
+FROM referral_history
+WHERE
+id = ?
+AND inquiry_id = ?
+AND referral_status = 'Prepared'
+LIMIT 1
+`)
+.bind(referralId,id)
+.first();
+
+if (!referral) {
+return new Response(
+"Prepared referral not found or already sent.",
+{status:409}
+);
+}
+
+const inquiry = await env.DB.prepare(`
+SELECT *
+FROM inquiries
+WHERE id = ?
+LIMIT 1
+`)
+.bind(id)
+.first();
+
+if (!inquiry) {
+return new Response(
+"Inquiry not found.",
+{status:404}
+);
+}
+
+const recipient = String(referral.referred_to_email || "").trim().toLowerCase();
+const subject = `FLTract Referral — Inquiry #${id}`;
+const message = String(referral.referral_note || "").trim();
+
+if (!recipient || !message) {
+return new Response(
+"Prepared referral is missing its recipient or message.",
+{status:400}
+);
+}
+
+let emailLogId = null;
+
+try {
+
+const logResult = await env.DB.prepare(`
+INSERT INTO email_log (
+inquiry_id,
+email_type,
+recipient,
+subject,
+status
+)
+VALUES (
+?,
+'Referral Communication',
+?,
+?,
+'Prepared'
+)
+`)
+.bind(id,recipient,subject)
+.run();
+
+emailLogId = Number(logResult?.meta?.last_row_id) || null;
+
+const sendResult = await env.SEND_EMAIL.send({
+to: recipient,
+from: "noreply@fltract.com",
+subject,
+text: message,
+html: `<div style="font-family:Arial,sans-serif;white-space:pre-wrap">${esc(message)}</div>`
+});
+
+if (emailLogId) {
+await env.DB.prepare(`
+UPDATE email_log
+SET
+status = 'Sent',
+provider_message_id = ?,
+sent_at = CURRENT_TIMESTAMP,
+failure_reason = NULL
+WHERE id = ?
+`)
+.bind(sendResult?.messageId ?? null,emailLogId)
+.run();
+}
+
+await env.DB.prepare(`
+UPDATE referral_history
+SET
+referral_status = 'Referred',
+referral_date = DATE('now')
+WHERE
+id = ?
+AND inquiry_id = ?
+`)
+.bind(referralId,id)
+.run();
 
 await env.DB.prepare(`
 UPDATE inquiries
-SET updated_at = CURRENT_TIMESTAMP
+SET
+status = 'Referred',
+next_follow_up_date = ?,
+next_follow_up_reason = 'Confirm referral professional contacted client',
+follow_up_status = 'Open',
+updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
 `)
-.bind(id)
+.bind(followupDate,id)
 .run();
 
+await env.DB.prepare(`
+INSERT INTO follow_ups (
+inquiry_id,
+due_date,
+reason,
+status
+)
+VALUES (
+?,
+?,
+'Confirm referral professional contacted client',
+'Open'
+)
+`)
+.bind(id,followupDate)
+.run();
 
-return redirect(
-`/inquiry/${id}`
+await env.DB.prepare(`
+INSERT INTO activity_log (
+inquiry_id,
+activity_type,
+activity_note
+)
+VALUES (
+?,
+'Referral Sent',
+?
+)
+`)
+.bind(
+id,
+`Referral #${referralId} approved and sent to ${recipient}. Follow-up scheduled for ${followupDate}.`
+)
+.run();
+
+}
+catch (error) {
+
+if (emailLogId) {
+try {
+await env.DB.prepare(`
+UPDATE email_log
+SET
+status = 'Failed',
+failure_reason = ?
+WHERE id = ?
+`)
+.bind(
+String(error?.message || error || "Unknown referral email error"),
+emailLogId
+)
+.run();
+} catch {}
+}
+
+console.error("Referral send failed:", error);
+
+return new Response(
+"Referral email was not sent. The referral remains prepared for review.",
+{status:502}
 );
+}
+
+return redirect(`/inquiry/${id}`);
 
 }
 
@@ -2422,6 +2609,37 @@ r.created_at
 
 </div>
 
+${r.referral_status === "Prepared" && r.referred_to_email
+?
+`
+<form
+method="post"
+action="/inquiry/${id}/referral-send"
+style="margin-top:16px"
+>
+<input type="hidden" name="referral_id" value="${esc(r.id)}">
+
+<div class="form-grid">
+<label>
+<span>Follow-Up Date After Referral *</span>
+<input type="date" name="followup_date" required>
+</label>
+</div>
+
+<div style="margin-top:12px">
+<button type="submit">
+Approve & Send Referral
+</button>
+</div>
+
+<p class="section-note">
+This button sends the exact prepared referral message above, records the email result, changes the inquiry to Referred, and schedules the follow-up date you select.
+</p>
+</form>
+`
+:
+""}
+
 </div>
 
 `)
@@ -2790,6 +3008,51 @@ ${esc(inquiry.acreage)}
 </div>
 </div>
 
+
+<div>
+<div class="label">
+Timeframe
+</div>
+<div class="value">
+${esc(inquiry.timeframe || "Not recorded")}
+</div>
+</div>
+
+<div>
+<div class="label">
+Owner Status
+</div>
+<div class="value">
+${esc(inquiry.owner_status || "Not recorded")}
+</div>
+</div>
+
+<div>
+<div class="label">
+Best Contact Time
+</div>
+<div class="value">
+${esc(inquiry.best_contact_time || "Not recorded")}
+</div>
+</div>
+
+<div>
+<div class="label">
+How Heard About FLTract
+</div>
+<div class="value">
+${esc(inquiry.referral_source || "Not recorded")}
+</div>
+</div>
+
+<div>
+<div class="label">
+Source Page
+</div>
+<div class="value">
+${esc(inquiry.source_page || "Not recorded")}
+</div>
+</div>
 
 <div>
 <div class="label">
@@ -3233,9 +3496,12 @@ ${activityHtml}
 <div class="panel">
 
 <h2>
-Record Referral
+Prepare Referral
 </h2>
 
+<p class="section-note">
+Prepare and review the referral here. Nothing is sent until you use the separate Approve &amp; Send Referral button in Referral History.
+</p>
 
 <form
 method="post"
@@ -3245,134 +3511,60 @@ action="/inquiry/${id}/referral"
 <div class="form-grid">
 
 <label>
-
-<span>
-Broker / Agent Name
-</span>
-
-<input
-name="referred_to_name"
-maxlength="200"
->
-
+<span>Broker / Agent Name</span>
+<input name="referred_to_name" maxlength="200">
 </label>
-
 
 <label>
-
-<span>
-Company / Brokerage
-</span>
-
-<input
-name="referred_to_company"
-maxlength="200"
->
-
+<span>Company / Brokerage</span>
+<input name="referred_to_company" maxlength="200">
 </label>
-
 
 <label>
-
-<span>
-Email
-</span>
-
-<input
-type="email"
-name="referred_to_email"
-maxlength="254"
->
-
+<span>Email *</span>
+<input type="email" name="referred_to_email" maxlength="254" required>
 </label>
-
 
 <label>
-
-<span>
-Phone
-</span>
-
-<input
-name="referred_to_phone"
-maxlength="100"
->
-
+<span>Phone</span>
+<input name="referred_to_phone" maxlength="100">
 </label>
-
-
-<label>
-
-<span>
-Referral Status
-</span>
-
-<select
-name="referral_status"
->
-
-<option>
-Pending
-</option>
-
-<option>
-Accepted
-</option>
-
-<option>
-Declined
-</option>
-
-<option>
-Referred
-</option>
-
-<option>
-Closed
-</option>
-
-</select>
-
-</label>
-
-
-<label>
-
-<span>
-Referral Date
-</span>
-
-<input
-type="date"
-name="referral_date"
->
-
-</label>
-
 
 <label class="full">
-
-<span>
-Referral Note
-</span>
-
+<span>Referral Message *</span>
 <textarea
 name="referral_note"
-rows="4"
+rows="16"
 maxlength="4000"
-></textarea>
+required
+>Hello,
 
+FLTract is referring the following property inquiry for your review.
+
+Client: ${esc(inquiry.first_name)} ${esc(inquiry.last_name)}
+Preferred contact: ${esc(inquiry.preferred_contact)}
+Email: ${esc(inquiry.email)}
+Phone: ${esc(inquiry.phone)}
+County: ${esc(inquiry.county)}
+Property type: ${esc(inquiry.property_type)}
+Approx. acreage: ${esc(inquiry.acreage)}
+Property location: ${esc(inquiry.property_location)}
+
+Client inquiry:
+${esc(inquiry.details)}
+
+Please review the inquiry and contact the client directly as appropriate.
+
+FLTract
+Florida Land & Property Information and Referral Resource</textarea>
 </label>
 
 </div>
 
-
 <div style="margin-top:14px">
-
 <button type="submit">
-Record Referral
+Prepare Referral for Review
 </button>
-
 </div>
 
 </form>
