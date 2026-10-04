@@ -725,6 +725,40 @@ function miniCompMetrics(comps) {
 }
 
 
+const COUNTY_RESEARCH_ADAPTERS = {
+  "St. Lucie": {
+    key:"st_lucie",
+    sourceName:"St. Lucie County Property Appraiser",
+    mode:"Direct Query",
+    status:"First Live Adapter"
+  },
+  "Indian River": {
+    key:"indian_river",
+    sourceName:"Indian River County Property Appraiser",
+    mode:"Published Dataset",
+    status:"Registered"
+  },
+  "Brevard": {
+    key:"brevard",
+    sourceName:"Brevard County Property Appraiser",
+    mode:"Direct Query / Dataset",
+    status:"Registered"
+  },
+  "Martin": {
+    key:"martin",
+    sourceName:"Martin County Property Appraiser",
+    mode:"Published Dataset",
+    status:"Registered"
+  },
+  "Okeechobee": {
+    key:"okeechobee",
+    sourceName:"Okeechobee County Property Appraiser",
+    mode:"Published Report",
+    status:"Registered"
+  }
+};
+
+
 /* ============================================================
    FLORIDA DATE / TIME
    ============================================================ */
