@@ -3558,6 +3558,10 @@ Record Preference Change
 Change Status
 </h2>
 
+<p class="section-note">
+Use this panel to record where the inquiry is in the FLTract workflow. Saving a status changes the inquiry's operational stage; it does not by itself send an email, change contact permission, or create a follow-up.
+</p>
+
 
 <form
 method="post"
@@ -3599,6 +3603,10 @@ Save Status
 <h2>
 Add Internal Note
 </h2>
+
+<p class="section-note">
+Use this panel as the internal case notebook. Record useful client, property, conversation, research, or handling information that should remain with the inquiry. Adding a note documents the record only; it does not change status, contact permission, follow-ups, or send anything.
+</p>
 
 
 <form
