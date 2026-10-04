@@ -208,6 +208,48 @@ async function ensureClientSchema(env) {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_mini_comp_queue_open
       ON mini_comp_queue(property_id, task_type)
       WHERE status IN ('Queued','Processing','Retry')
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS report_library_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_id INTEGER NOT NULL,
+        property_id INTEGER NOT NULL,
+        report_type TEXT NOT NULL,
+        source_table TEXT NOT NULL,
+        source_id INTEGER NOT NULL,
+        title TEXT NOT NULL DEFAULT '',
+        current_status TEXT NOT NULL DEFAULT 'Draft',
+        current_version INTEGER NOT NULL DEFAULT 0,
+        current_route TEXT NOT NULL DEFAULT '',
+        archived INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(source_table, source_id)
+      )
+    `),
+    env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_report_library_property
+      ON report_library_items(property_id, updated_at)
+    `),
+    env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_report_library_client
+      ON report_library_items(client_id, updated_at)
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS report_library_versions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        library_item_id INTEGER NOT NULL,
+        version_number INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'Approved',
+        snapshot_json TEXT NOT NULL,
+        approved_at TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(library_item_id, version_number)
+      )
+    `),
+    env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_report_versions_item
+      ON report_library_versions(library_item_id, version_number)
     `)
   ]);
 
@@ -407,6 +449,31 @@ async function linkInquiryToProperty(
       VALUES (?, ?, 'Research Mini-Comp', 'Queued')
     `)
     .bind(propertyId, report.id)
+    .run();
+
+    const propertyCode =
+      `FLP-${String(propertyId).padStart(6, "0")}`;
+
+    await env.DB.prepare(`
+      INSERT OR IGNORE INTO report_library_items (
+        client_id,
+        property_id,
+        report_type,
+        source_table,
+        source_id,
+        title,
+        current_status,
+        current_route
+      )
+      VALUES (?, ?, 'Mini-Comp', 'mini_comp_reports', ?, ?, 'Needs Research', ?)
+    `)
+    .bind(
+      clientId,
+      propertyId,
+      report.id,
+      `Mini-Comp — ${propertyCode}`,
+      `/property/${propertyId}/mini-comp/report`
+    )
     .run();
   }
 
