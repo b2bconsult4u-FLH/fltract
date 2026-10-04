@@ -4120,6 +4120,236 @@ headers:{
 
 
 /* ============================================================
+   OFFICIAL COUNTY RESEARCH — ST. LUCIE FIRST ADAPTER
+   ============================================================ */
+
+if (
+request.method === "POST" &&
+/^\/property\/\d+\/official-research$/.test(url.pathname)
+) {
+  if (!sameOriginPost(request)) {
+    return new Response("Invalid request origin.", {status:403});
+  }
+
+  const propertyId = Number(url.pathname.split("/").filter(Boolean)[1]);
+  const property = await env.DB.prepare(`
+    SELECT * FROM properties WHERE id = ? LIMIT 1
+  `).bind(propertyId).first();
+
+  if (!property) {
+    return new Response("Property record not found.", {status:404});
+  }
+
+  const adapter = COUNTY_RESEARCH_ADAPTERS[property.county];
+
+  if (!adapter) {
+    return new Response("No official county adapter is registered for this county.", {status:400});
+  }
+
+  const run = await env.DB.prepare(`
+    INSERT INTO official_research_runs (
+      property_id, county, adapter_key, status, source_name
+    )
+    VALUES (?, ?, ?, 'Processing', ?)
+  `).bind(propertyId, property.county || "", adapter.key, adapter.sourceName).run();
+
+  const runId = Number(run?.meta?.last_row_id) || 0;
+
+  if (property.county !== "St. Lucie") {
+    const note = `${adapter.sourceName} is registered; automatic parsing is not live for this county yet.`;
+    await env.DB.prepare(`
+      UPDATE official_research_runs
+      SET status = 'Adapter Pending', result_note = ?, completed_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).bind(note, runId).run();
+
+    return redirect(`/property/${propertyId}`);
+  }
+
+  try {
+    const where = stLucieSubjectWhere(property);
+    if (!where) {
+      throw new Error("Enter a parcel ID or complete property location before running official research.");
+    }
+
+    const subjectData = await queryOfficialArcGIS(ST_LUCIE_PARCEL_QUERY, {
+      where,
+      outFields:"ParcelID,PropertyID,LandUseCode,LandUseCodeDescription,ImprovedStatus,TotalArea,Zoning,SiteAddress,SiteCity,SiteZIP,Owner1,Owner2,MailAddress1,MailAddress2,MailCity,MailState,MailZipCode,TotalAppraisedValue,TotalAssessedValue,TotalTaxableValue,LegalDescription",
+      returnGeometry:"true",
+      outSR:"3857",
+      resultRecordCount:"5"
+    });
+
+    const matches = subjectData.features || [];
+
+    if (matches.length !== 1) {
+      const note = matches.length
+        ? `${matches.length} possible parcels matched. FLTract stopped for parcel verification instead of guessing.`
+        : "No exact official parcel match was found. Verify the address or enter the official parcel ID.";
+
+      await env.DB.prepare(`
+        UPDATE official_research_runs
+        SET status = 'Needs Verification',
+            subject_matches = ?,
+            result_note = ?,
+            completed_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).bind(matches.length, note, runId).run();
+
+      await env.DB.prepare(`
+        UPDATE properties
+        SET research_status = 'Needs Verification', updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).bind(propertyId).run();
+
+      return redirect(`/property/${propertyId}`);
+    }
+
+    const feature = matches[0];
+    const a = feature.attributes || {};
+    const mailing = [
+      a.MailAddress1,
+      a.MailAddress2,
+      [a.MailCity,a.MailState,a.MailZipCode].filter(Boolean).join(" ")
+    ].filter(Boolean).join(", ");
+
+    await env.DB.prepare(`
+      UPDATE properties
+      SET
+        parcel_id = ?,
+        legal_description = ?,
+        owner_name = ?,
+        owner_mailing_address = ?,
+        assessed_value = ?,
+        market_value = ?,
+        taxable_value = ?,
+        zoning = ?,
+        land_use = ?,
+        data_source = 'St. Lucie County Property Appraiser — Public Parcel Layer',
+        data_verified_at = CURRENT_TIMESTAMP,
+        research_status = 'Researching',
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).bind(
+      a.ParcelID || "",
+      a.LegalDescription || "",
+      [a.Owner1,a.Owner2].filter(Boolean).join(" / "),
+      mailing,
+      a.TotalAssessedValue == null ? "" : String(a.TotalAssessedValue),
+      a.TotalAppraisedValue == null ? "" : String(a.TotalAppraisedValue),
+      a.TotalTaxableValue == null ? "" : String(a.TotalTaxableValue),
+      a.Zoning || "",
+      a.LandUseCodeDescription || a.LandUseCode || "",
+      propertyId
+    ).run();
+
+    const report = await ensureMiniCompForProperty(env, propertyId);
+    let imported = 0;
+
+    if (feature.geometry && report?.id) {
+      const salesData = await queryOfficialArcGIS(ST_LUCIE_PARCEL_QUERY, {
+        where:`SalePrice > 0 AND ParcelID <> '${researchSql(a.ParcelID || "")}'`,
+        geometry:JSON.stringify(feature.geometry),
+        geometryType:"esriGeometryPolygon",
+        inSR:"3857",
+        spatialRel:"esriSpatialRelIntersects",
+        distance:"20",
+        units:"esriSRUnit_StatuteMile",
+        outFields:"ParcelID,PropertyID,LandUseCodeDescription,ImprovedStatus,TotalArea,Zoning,SiteAddress,SiteCity,SalePrice,SaleDate,NALCode",
+        returnGeometry:"false",
+        orderByFields:"SaleDate DESC",
+        resultRecordCount:"25"
+      });
+
+      for (const candidate of (salesData.features || []).slice(0,10)) {
+        const s = candidate.attributes || {};
+        const saleDate = Number.isFinite(Number(s.SaleDate))
+          ? new Date(Number(s.SaleDate)).toISOString().slice(0,10)
+          : "";
+
+        const exists = await env.DB.prepare(`
+          SELECT id FROM mini_comp_comparables
+          WHERE report_id = ? AND parcel_id = ? AND sale_date = ? AND sale_price = ?
+          LIMIT 1
+        `).bind(report.id, s.ParcelID || "", saleDate, Number(s.SalePrice) || 0).first();
+
+        if (exists) continue;
+
+        await env.DB.prepare(`
+          INSERT INTO mini_comp_comparables (
+            report_id, property_location, county, parcel_id,
+            sale_date, sale_price, qualified_sale, improvements,
+            source_name, source_reference, source_retrieved_at,
+            selection_reason, notes
+          )
+          VALUES (?, ?, 'St. Lucie', ?, ?, ?, 'Unknown', ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
+        `).bind(
+          report.id,
+          [s.SiteAddress,s.SiteCity].filter(Boolean).join(", ") || `Parcel ${s.ParcelID || ""}`,
+          s.ParcelID || "",
+          saleDate,
+          Number(s.SalePrice) || null,
+          [
+            s.LandUseCodeDescription,
+            s.ImprovedStatus ? `Improved: ${s.ImprovedStatus}` : "",
+            s.Zoning ? `Zoning: ${s.Zoning}` : ""
+          ].filter(Boolean).join(" · "),
+          "St. Lucie County Property Appraiser",
+          `Public Parcel Layer — PropertyID ${s.PropertyID || ""}; Parcel ${s.ParcelID || ""}`,
+          "Automated nearby-sale candidate within the configured 20-mile research radius.",
+          `Human review required. County NAL code: ${s.NALCode || "not recorded"}. County TotalArea: ${s.TotalArea ?? "not recorded"}; FLTract has not assumed this field is acreage.`
+        ).run();
+
+        imported++;
+      }
+
+      await env.DB.prepare(`
+        UPDATE mini_comp_reports
+        SET status = CASE WHEN ? > 0 THEN 'Draft' ELSE status END,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).bind(imported, report.id).run();
+
+      await syncMiniCompLibraryStatus(env, propertyId, report.id);
+    }
+
+    const note =
+      `Official subject parcel verified. Imported ${imported} nearby sale candidate(s) for human comparability review.`;
+
+    await env.DB.prepare(`
+      UPDATE official_research_runs
+      SET status = 'Completed',
+          subject_matches = 1,
+          comparable_candidates = ?,
+          result_note = ?,
+          completed_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).bind(imported, note, runId).run();
+
+    if (property.primary_inquiry_id) {
+      await env.DB.prepare(`
+        INSERT INTO activity_log (inquiry_id, activity_type, activity_note)
+        VALUES (?, 'Official Property Research', ?)
+      `).bind(property.primary_inquiry_id, `${propertyCode(propertyId)} — ${note}`).run();
+    }
+
+    return redirect(`/property/${propertyId}`);
+  }
+  catch (error) {
+    const note = `Official research stopped safely: ${String(error.message || error).slice(0,1200)}`;
+
+    await env.DB.prepare(`
+      UPDATE official_research_runs
+      SET status = 'Failed', result_note = ?, completed_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).bind(note, runId).run();
+
+    return redirect(`/property/${propertyId}`);
+  }
+}
+
+
+/* ============================================================
    MINI-COMP REPORT ENGINE
    ============================================================ */
 
