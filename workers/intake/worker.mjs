@@ -103,6 +103,51 @@ async function ensureClientSchema(env) {
     env.DB.prepare(`
       CREATE INDEX IF NOT EXISTS idx_client_inquiries_client
       ON client_inquiries(client_id)
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS properties (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_id INTEGER NOT NULL,
+        primary_inquiry_id INTEGER UNIQUE,
+        property_location TEXT NOT NULL DEFAULT '',
+        county TEXT NOT NULL DEFAULT '',
+        property_type TEXT NOT NULL DEFAULT '',
+        acreage TEXT NOT NULL DEFAULT '',
+        parcel_id TEXT NOT NULL DEFAULT '',
+        legal_description TEXT NOT NULL DEFAULT '',
+        owner_name TEXT NOT NULL DEFAULT '',
+        owner_mailing_address TEXT NOT NULL DEFAULT '',
+        assessed_value TEXT NOT NULL DEFAULT '',
+        market_value TEXT NOT NULL DEFAULT '',
+        taxable_value TEXT NOT NULL DEFAULT '',
+        zoning TEXT NOT NULL DEFAULT '',
+        land_use TEXT NOT NULL DEFAULT '',
+        improvements TEXT NOT NULL DEFAULT '',
+        research_status TEXT NOT NULL DEFAULT 'Not Started',
+        data_source TEXT NOT NULL DEFAULT '',
+        data_verified_at TEXT,
+        notes TEXT NOT NULL DEFAULT '',
+        archived INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS property_inquiries (
+        property_id INTEGER NOT NULL,
+        inquiry_id INTEGER NOT NULL UNIQUE,
+        linked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        link_basis TEXT NOT NULL DEFAULT 'Inquiry Seed',
+        PRIMARY KEY (property_id, inquiry_id)
+      )
+    `),
+    env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_properties_client
+      ON properties(client_id)
+    `),
+    env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_property_inquiries_property
+      ON property_inquiries(property_id)
     `)
   ]);
 
@@ -198,6 +243,81 @@ async function linkInquiryToClient(
   .run();
 
   return Number(client.id);
+}
+
+async function linkInquiryToProperty(
+  env,
+  {
+    clientId,
+    inquiryId,
+    propertyLocation,
+    county,
+    propertyType,
+    acreage,
+    improvements
+  }
+) {
+  await ensureClientSchema(env);
+
+  const existing =
+    await env.DB.prepare(`
+      SELECT p.id
+      FROM properties p
+      JOIN property_inquiries pi
+        ON pi.property_id = p.id
+      WHERE pi.inquiry_id = ?
+      LIMIT 1
+    `)
+    .bind(inquiryId)
+    .first();
+
+  if (existing?.id) {
+    return Number(existing.id);
+  }
+
+  const insert =
+    await env.DB.prepare(`
+      INSERT INTO properties (
+        client_id,
+        primary_inquiry_id,
+        property_location,
+        county,
+        property_type,
+        acreage,
+        improvements,
+        research_status
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'Not Started')
+    `)
+    .bind(
+      clientId,
+      inquiryId,
+      propertyLocation || "",
+      county || "",
+      propertyType || "",
+      acreage || "",
+      improvements || ""
+    )
+    .run();
+
+  const propertyId = Number(insert?.meta?.last_row_id) || 0;
+
+  if (!propertyId) {
+    throw new Error("PROPERTY_LINK_FAILED");
+  }
+
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO property_inquiries (
+      property_id,
+      inquiry_id,
+      link_basis
+    )
+    VALUES (?, ?, 'Inquiry Seed')
+  `)
+  .bind(propertyId, inquiryId)
+  .run();
+
+  return propertyId;
 }
 
 
@@ -2185,14 +2305,28 @@ export default {
 
     try {
 
-      await linkInquiryToClient(
+      const clientId =
+        await linkInquiryToClient(
+          env,
+          {
+            inquiryId,
+            firstName,
+            lastName,
+            email,
+            phone
+          }
+        );
+
+      await linkInquiryToProperty(
         env,
         {
+          clientId,
           inquiryId,
-          firstName,
-          lastName,
-          email,
-          phone
+          propertyLocation,
+          county,
+          propertyType,
+          acreage,
+          improvements
         }
       );
 
@@ -2200,7 +2334,7 @@ export default {
     catch (error) {
 
       console.error(
-        "Client account link failed:",
+        "Client/property account link failed:",
         error
       );
 
