@@ -336,6 +336,36 @@ async function ensureClientSchema(env) {
     env.DB.prepare(`
       CREATE INDEX IF NOT EXISTS idx_official_research_runs_property
       ON official_research_runs(property_id, created_at)
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS staff_users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email TEXT NOT NULL UNIQUE,
+        display_name TEXT NOT NULL DEFAULT '',
+        role TEXT NOT NULL DEFAULT 'Employee',
+        active INTEGER NOT NULL DEFAULT 1,
+        bootstrap_admin INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        last_seen_at TEXT
+      )
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS staff_access_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        staff_user_id INTEGER,
+        email TEXT NOT NULL DEFAULT '',
+        event_type TEXT NOT NULL,
+        route TEXT NOT NULL DEFAULT '',
+        method TEXT NOT NULL DEFAULT '',
+        result TEXT NOT NULL DEFAULT '',
+        note TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `),
+    env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_staff_access_log_user
+      ON staff_access_log(staff_user_id, created_at)
     `)
   ]);
 
@@ -802,6 +832,125 @@ function stLucieSubjectWhere(property) {
 
   if (!street) return "";
   return `UPPER(SiteAddress)='${researchSql(street)}'`;
+}
+
+
+const STAFF_ROLES = [
+  "Administrator",
+  "CEO",
+  "CFO",
+  "CFO Administrative Assistant",
+  "Manager",
+  "Employee"
+];
+
+function accessIdentity(request) {
+  return String(
+    request.headers.get("Cf-Access-Authenticated-User-Email") || ""
+  ).trim().toLowerCase();
+}
+
+async function staffContext(env, request) {
+  const email = accessIdentity(request);
+  if (!email) {
+    return {authenticated:false, email:"", user:null};
+  }
+
+  let user = await env.DB.prepare(`
+    SELECT * FROM staff_users WHERE email = ? LIMIT 1
+  `).bind(email).first();
+
+  if (!user) {
+    const count = await env.DB.prepare(`
+      SELECT COUNT(*) AS n FROM staff_users
+    `).first();
+
+    if (Number(count?.n || 0) === 0) {
+      await env.DB.prepare(`
+        INSERT INTO staff_users (
+          email, display_name, role, active, bootstrap_admin
+        )
+        VALUES (?, ?, 'Administrator', 1, 1)
+      `).bind(email, email).run();
+
+      user = await env.DB.prepare(`
+        SELECT * FROM staff_users WHERE email = ? LIMIT 1
+      `).bind(email).first();
+
+      await env.DB.prepare(`
+        INSERT INTO staff_access_log (
+          staff_user_id, email, event_type, route, method, result, note
+        )
+        VALUES (?, ?, 'Bootstrap Administrator Created', '', '', 'Allowed',
+                'First authenticated Cloudflare Access identity established the initial Administrator account.')
+      `).bind(user?.id || null, email).run();
+    }
+  }
+
+  if (user?.active) {
+    await env.DB.prepare(`
+      UPDATE staff_users
+      SET last_seen_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).bind(user.id).run();
+  }
+
+  return {authenticated:true, email, user:user || null};
+}
+
+function staffCan(user, capability) {
+  if (!user || !user.active) return false;
+
+  const role = String(user.role || "");
+
+  const matrix = {
+    "Administrator": new Set([
+      "admin_access","manage_staff","view_clients","edit_clients",
+      "research_property","review_reports","approve_reports",
+      "prepare_referrals","approve_referrals","manage_followups",
+      "view_compliance","export_data","view_audit"
+    ]),
+    "CEO": new Set([
+      "admin_access","manage_staff","view_clients","edit_clients",
+      "research_property","review_reports","approve_reports",
+      "prepare_referrals","approve_referrals","manage_followups",
+      "view_compliance","export_data","view_audit"
+    ]),
+    "CFO": new Set([
+      "admin_access","view_clients","view_compliance","view_audit"
+    ]),
+    "CFO Administrative Assistant": new Set([
+      "admin_access","view_clients"
+    ]),
+    "Manager": new Set([
+      "admin_access","view_clients","edit_clients","research_property",
+      "review_reports","prepare_referrals","manage_followups"
+    ]),
+    "Employee": new Set([
+      "admin_access","view_clients","research_property","manage_followups"
+    ])
+  };
+
+  return Boolean(matrix[role]?.has(capability));
+}
+
+async function logStaffAccess(env, ctx, request, eventType, result, note = "") {
+  try {
+    await env.DB.prepare(`
+      INSERT INTO staff_access_log (
+        staff_user_id, email, event_type, route, method, result, note
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      ctx?.user?.id || null,
+      ctx?.email || "",
+      eventType,
+      new URL(request.url).pathname,
+      request.method,
+      result,
+      String(note || "").slice(0,1000)
+    ).run();
+  } catch {}
 }
 
 
