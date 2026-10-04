@@ -699,11 +699,53 @@ label span{
   color:var(--ink);
 }
 
+.management-grid{
+  display:grid;
+  grid-template-columns:repeat(3,1fr);
+  gap:14px;
+  margin-bottom:22px;
+}
+
+.management-card{
+  display:block;
+  background:#fff;
+  border:1px solid #d8d8d2;
+  border-left:5px solid var(--green);
+  padding:16px 18px;
+  text-decoration:none;
+  color:inherit;
+}
+
+.management-card:hover{
+  border-color:var(--ink);
+}
+
+.management-card.warning{
+  border-left-color:var(--gold);
+}
+
+.management-card.danger{
+  border-left-color:var(--danger);
+}
+
+.management-card.muted{
+  border-left-color:#7a827e;
+}
+
+.management-card .summary-number{
+  margin-top:4px;
+}
+
+.management-card .small{
+  margin-top:6px;
+}
+
 @media(max-width:760px){
 
   .grid,
   .form-grid,
-  .summary-grid{
+  .summary-grid,
+  .management-grid{
     grid-template-columns:1fr;
   }
 
@@ -3983,6 +4025,38 @@ const search =
 url.searchParams.get("q") || "";
 
 
+const today =
+floridaToday();
+
+
+const management =
+await env.DB.prepare(`
+SELECT
+SUM(CASE WHEN status = 'New' THEN 1 ELSE 0 END) AS new_count,
+SUM(CASE WHEN status = 'Referral Prepared' THEN 1 ELSE 0 END) AS prepared_count,
+SUM(CASE WHEN status = 'Referred' THEN 1 ELSE 0 END) AS referred_count,
+SUM(CASE WHEN status = 'Closed' THEN 1 ELSE 0 END) AS closed_count,
+SUM(
+  CASE
+    WHEN follow_up_status = 'Open'
+      AND next_follow_up_date = ?
+    THEN 1 ELSE 0
+  END
+) AS due_today_count,
+SUM(
+  CASE
+    WHEN follow_up_status = 'Open'
+      AND next_follow_up_date < ?
+    THEN 1 ELSE 0
+  END
+) AS overdue_count
+FROM inquiries
+WHERE archived = 0
+`)
+.bind(today,today)
+.first();
+
+
 let sql = `
 SELECT *
 FROM inquiries
@@ -4053,10 +4127,6 @@ params.length
 await stmt.bind(...params).all()
 :
 await stmt.all();
-
-
-const today =
-floridaToday();
 
 
 let dueTodayCount = 0;
@@ -4237,43 +4307,57 @@ Property Inquiries
 </h1>
 
 
-<div class="summary-grid">
+<div class="panel">
 
-<div class="summary-card">
+<h2>
+Management Dashboard
+</h2>
 
-<div class="label">
-Open Records
-</div>
+<p class="section-note">
+Use these cards as the daily FLTract work queue. The numbers cover all active, non-archived inquiries, regardless of the filters below. Click a status card to show those inquiries; click Due Today or Overdue to open the Follow Ups work list. Red requires attention, yellow is due now, and green or gray is informational.
+</p>
 
-<div class="summary-number">
-${results.length}
-</div>
+<p class="section-note">
+The automatic follow-up reminder checks each morning and emails the FLTract office only when a follow-up is due or overdue. The dashboard remains the authoritative on-screen work list.
+</p>
 
-</div>
+<div class="management-grid">
 
+<a class="management-card" href="/?status=New">
+<div class="label">New</div>
+<div class="summary-number">${Number(management?.new_count || 0)}</div>
+<div class="small">New inquiries awaiting initial review.</div>
+</a>
 
-<div class="summary-card">
+<a class="management-card warning" href="/followups">
+<div class="label">Due Today</div>
+<div class="summary-number">${Number(management?.due_today_count || 0)}</div>
+<div class="small">Open follow-ups that should be handled today.</div>
+</a>
 
-<div class="label">
-Follow Ups Due Today
-</div>
+<a class="management-card danger" href="/followups">
+<div class="label">Overdue</div>
+<div class="summary-number">${Number(management?.overdue_count || 0)}</div>
+<div class="small">Open follow-ups past their scheduled date.</div>
+</a>
 
-<div class="summary-number">
-${dueTodayCount}
-</div>
+<a class="management-card warning" href="/?status=Referral%20Prepared">
+<div class="label">Referral Prepared</div>
+<div class="summary-number">${Number(management?.prepared_count || 0)}</div>
+<div class="small">Prepared referrals waiting for human review and approval.</div>
+</a>
 
-</div>
+<a class="management-card" href="/?status=Referred">
+<div class="label">Referred</div>
+<div class="summary-number">${Number(management?.referred_count || 0)}</div>
+<div class="small">Inquiries already sent to a referral professional.</div>
+</a>
 
-
-<div class="summary-card">
-
-<div class="label">
-Overdue Follow Ups
-</div>
-
-<div class="summary-number">
-${overdueCount}
-</div>
+<a class="management-card muted" href="/?status=Closed">
+<div class="label">Closed</div>
+<div class="summary-number">${Number(management?.closed_count || 0)}</div>
+<div class="small">Completed inquiries retained in the operational record.</div>
+</a>
 
 </div>
 
