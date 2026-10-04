@@ -5353,6 +5353,30 @@ request.method === "GET" &&
   `).bind(propertyId).all();
 
   const miniCompForLibrary = await ensureMiniCompForProperty(env, propertyId);
+
+  const researchRuns = await env.DB.prepare(`
+    SELECT *
+    FROM official_research_runs
+    WHERE property_id = ?
+    ORDER BY created_at DESC, id DESC
+    LIMIT 5
+  `).bind(propertyId).all();
+
+  const countyAdapter = COUNTY_RESEARCH_ADAPTERS[property.county] || null;
+
+  const researchRunRows = researchRuns.results.length
+    ? researchRuns.results.map(run => `
+      <tr>
+        <td>${esc(floridaTime(run.created_at))}</td>
+        <td><span class="badge ${run.status === "Completed" ? "good" : run.status === "Failed" ? "danger" : "warning"}">${esc(run.status)}</span></td>
+        <td>${esc(run.source_name)}</td>
+        <td>${esc(run.subject_matches)}</td>
+        <td>${esc(run.comparable_candidates)}</td>
+        <td>${esc(run.result_note)}</td>
+      </tr>
+    `).join("")
+    : '<tr><td colspan="6" class="empty">No official county research runs yet.</td></tr>';
+
   const libraryItems = await env.DB.prepare(`
     SELECT *
     FROM report_library_items
@@ -5413,6 +5437,36 @@ This is the durable FLTract property research record. Client-submitted intake in
 <div><div class="label">Research Status</div><div class="value">${esc(property.research_status || "Not Started")}</div></div>
 <div><div class="label">Last Updated</div><div class="value">${esc(floridaTime(property.updated_at))}</div></div>
 </div>
+</div>
+
+<div class="panel">
+<h2>Official County Research</h2>
+<p class="section-note">
+This adapter checks authoritative county-published property data before it enters the FLTract research record. It stops for review when the subject parcel is ambiguous. Sale records imported by automation are candidates only and remain unqualified until human review.
+</p>
+
+<div class="grid">
+<div><div class="label">County</div><div class="value">${esc(property.county || "Not recorded")}</div></div>
+<div><div class="label">Adapter</div><div class="value">${esc(countyAdapter ? countyAdapter.status : "Not configured")}</div></div>
+<div><div class="label">Mode</div><div class="value">${esc(countyAdapter ? countyAdapter.mode : "—")}</div></div>
+<div><div class="label">Official Source</div><div class="value">${esc(countyAdapter ? countyAdapter.sourceName : "—")}</div></div>
+</div>
+
+${countyAdapter ? `
+<form method="post" action="/property/${property.id}/official-research" style="margin-top:14px">
+<button type="submit">${property.county === "St. Lucie" ? "Run Official County Research" : "Check County Adapter"}</button>
+</form>
+<p class="section-note">
+${property.county === "St. Lucie"
+  ? "St. Lucie is the first live direct-query adapter. It verifies an exact subject parcel and may add nearby public sale records to the Mini-Comp as candidates for human review."
+  : "This county source is registered. Its automatic parser is not live yet; the check records that status without changing property research."}
+</p>
+` : '<div class="empty">No official-data adapter is registered for this county.</div>'}
+
+<table>
+<thead><tr><th>Run</th><th>Status</th><th>Source</th><th>Subject Matches</th><th>Sale Candidates</th><th>Result</th></tr></thead>
+<tbody>${researchRunRows}</tbody>
+</table>
 </div>
 
 <div class="panel">
