@@ -8246,6 +8246,16 @@ ${esc(s)}
 `)
 .join("");
 
+const countyOptions =
+[...FLORIDA_COUNTIES, "Not Sure"]
+.map(name => `
+<option value="${esc(name)}" ${county === name ? "selected" : ""}>
+${esc(name)}
+</option>
+`)
+.join("");
+
+
 
 const html =
 page(`
@@ -8381,48 +8391,10 @@ ${statusOptions}
 <select name="county">
 
 <option value="">
-All counties
+All Florida counties
 </option>
 
-<option
-${county === "Brevard"
-? "selected"
-: ""}
->
-Brevard
-</option>
-
-<option
-${county === "Indian River"
-? "selected"
-: ""}
->
-Indian River
-</option>
-
-<option
-${county === "St. Lucie"
-? "selected"
-: ""}
->
-St. Lucie
-</option>
-
-<option
-${county === "Martin"
-? "selected"
-: ""}
->
-Martin
-</option>
-
-<option
-${county === "Okeechobee"
-? "selected"
-: ""}
->
-Okeechobee
-</option>
+${countyOptions}
 
 </select>
 
