@@ -782,6 +782,107 @@ function setFollowupDate(id, days) {
 
 
 /* ============================================================
+   DAILY FOLLOW-UP REMINDER
+   ============================================================ */
+
+async function sendDailyFollowupReminder(env) {
+
+if (!env.DB || !env.SEND_EMAIL) {
+throw new Error(
+"Daily follow-up reminder requires DB and SEND_EMAIL bindings."
+);
+}
+
+const todayParts =
+new Intl.DateTimeFormat(
+"en-US",
+{
+timeZone: FLORIDA_TIME_ZONE,
+year:"numeric",
+month:"2-digit",
+day:"2-digit"
+}
+)
+.formatToParts(new Date());
+
+const part =
+type =>
+todayParts.find(
+p => p.type === type
+)?.value || "";
+
+const today =
+`${part("year")}-${part("month")}-${part("day")}`;
+
+const {results = []} =
+await env.DB.prepare(`
+SELECT
+f.id AS followup_id,
+f.inquiry_id,
+f.due_date,
+f.reason,
+i.first_name,
+i.last_name,
+i.status AS inquiry_status
+FROM follow_ups f
+JOIN inquiries i
+ON i.id = f.inquiry_id
+WHERE
+f.status = 'Open'
+AND f.due_date <= ?
+ORDER BY
+f.due_date ASC,
+f.inquiry_id ASC
+`)
+.bind(today)
+.all();
+
+if (!results.length) {
+return;
+}
+
+const lines =
+results.map(r => {
+
+const timing =
+String(r.due_date) < today
+? "OVERDUE"
+: "DUE TODAY";
+
+return [
+`${timing} — Inquiry #${r.inquiry_id}`,
+`Client: ${r.first_name || ""} ${r.last_name || ""}`.trim(),
+`Due: ${r.due_date}`,
+`Reason: ${r.reason || ""}`,
+`Inquiry status: ${r.inquiry_status || ""}`
+].join("\n");
+
+});
+
+const subject =
+`FLTract Follow-Ups Due — ${results.length} Item${results.length === 1 ? "" : "s"}`;
+
+const body =
+`FLTract has open follow-ups requiring attention.
+
+${lines.join("\n\n")}
+
+Open FLTract Admin → Follow Ups to review and complete them.
+
+This is an internal operational reminder.`;
+
+await env.SEND_EMAIL.send({
+to:"fltractoffice@gmail.com",
+from:"noreply@fltract.com",
+subject,
+text:body,
+html:`<div style="font-family:Arial,sans-serif;white-space:pre-wrap">${esc(body)}</div>`
+});
+
+}
+
+
+/* ============================================================
    WORKER
    ============================================================ */
 
@@ -4337,6 +4438,20 @@ headers:{
 "no-referrer"
 }
 }
+);
+
+},
+
+async scheduled(controller, env, ctx) {
+
+ctx.waitUntil(
+sendDailyFollowupReminder(env)
+.catch(error => {
+console.error(
+"Daily FLTract follow-up reminder failed:",
+error
+);
+})
 );
 
 }
