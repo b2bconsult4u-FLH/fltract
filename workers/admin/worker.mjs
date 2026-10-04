@@ -828,38 +828,124 @@ function miniCompMetrics(comps) {
 }
 
 
-const COUNTY_RESEARCH_ADAPTERS = {
+const FLORIDA_COUNTIES = [
+  "Alachua",
+  "Baker",
+  "Bay",
+  "Bradford",
+  "Brevard",
+  "Broward",
+  "Calhoun",
+  "Charlotte",
+  "Citrus",
+  "Clay",
+  "Collier",
+  "Columbia",
+  "DeSoto",
+  "Dixie",
+  "Duval",
+  "Escambia",
+  "Flagler",
+  "Franklin",
+  "Gadsden",
+  "Gilchrist",
+  "Glades",
+  "Gulf",
+  "Hamilton",
+  "Hardee",
+  "Hendry",
+  "Hernando",
+  "Highlands",
+  "Hillsborough",
+  "Holmes",
+  "Indian River",
+  "Jackson",
+  "Jefferson",
+  "Lafayette",
+  "Lake",
+  "Lee",
+  "Leon",
+  "Levy",
+  "Liberty",
+  "Madison",
+  "Manatee",
+  "Marion",
+  "Martin",
+  "Miami-Dade",
+  "Monroe",
+  "Nassau",
+  "Okaloosa",
+  "Okeechobee",
+  "Orange",
+  "Osceola",
+  "Palm Beach",
+  "Pasco",
+  "Pinellas",
+  "Polk",
+  "Putnam",
+  "Santa Rosa",
+  "Sarasota",
+  "Seminole",
+  "St. Johns",
+  "St. Lucie",
+  "Sumter",
+  "Suwannee",
+  "Taylor",
+  "Union",
+  "Volusia",
+  "Wakulla",
+  "Walton",
+  "Washington"
+];
+
+const PRIORITY_COUNTIES = new Set([
+  "Brevard","Indian River","St. Lucie","Martin","Okeechobee"
+]);
+
+const COUNTY_RESEARCH_ADAPTERS = Object.fromEntries(
+  FLORIDA_COUNTIES.map(county => [
+    county,
+    {
+      key: county.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, ""),
+      sourceName: `${county} County Property Appraiser / Official County Source`,
+      mode: PRIORITY_COUNTIES.has(county) ? "Priority Adapter Pending" : "Manual Official Research",
+      status: PRIORITY_COUNTIES.has(county) ? "Priority" : "Statewide Manual"
+    }
+  ])
+);
+
+Object.assign(COUNTY_RESEARCH_ADAPTERS, {
   "St. Lucie": {
     key:"st_lucie",
     sourceName:"St. Lucie County Property Appraiser",
     mode:"Direct Query",
-    status:"First Live Adapter"
+    status:"Automated"
   },
   "Indian River": {
     key:"indian_river",
     sourceName:"Indian River County Property Appraiser",
     mode:"Published Dataset",
-    status:"Registered"
+    status:"Priority Adapter Pending"
   },
   "Brevard": {
     key:"brevard",
     sourceName:"Brevard County Property Appraiser",
     mode:"Direct Query / Dataset",
-    status:"Registered"
+    status:"Priority Adapter Pending"
   },
   "Martin": {
     key:"martin",
     sourceName:"Martin County Property Appraiser",
     mode:"Published Dataset",
-    status:"Registered"
+    status:"Priority Adapter Pending"
   },
   "Okeechobee": {
     key:"okeechobee",
     sourceName:"Okeechobee County Property Appraiser",
     mode:"Published Report",
-    status:"Registered"
+    status:"Priority Adapter Pending"
   }
-};
+});
 
 
 const ST_LUCIE_PARCEL_QUERY =
@@ -4873,12 +4959,22 @@ request.method === "POST" &&
   const runId = Number(run?.meta?.last_row_id) || 0;
 
   if (property.county !== "St. Lucie") {
-    const note = `${adapter.sourceName} is registered; automatic parsing is not live for this county yet.`;
+    const isPriority = PRIORITY_COUNTIES.has(property.county);
+    const note = isPriority
+      ? `${property.county} is a priority FLTract county. Its automated adapter is pending; use the official county source for manual research until activation.`
+      : `${property.county} is supported statewide. Automated retrieval is not active for this county; complete research from the official county source and retain the source in the Property Record.`;
+
     await env.DB.prepare(`
       UPDATE official_research_runs
-      SET status = 'Adapter Pending', result_note = ?, completed_at = CURRENT_TIMESTAMP
+      SET status = ?,
+          result_note = ?,
+          completed_at = CURRENT_TIMESTAMP
       WHERE id = ?
-    `).bind(note, runId).run();
+    `).bind(
+      isPriority ? "Priority Adapter Pending" : "Manual Official Research",
+      note,
+      runId
+    ).run();
 
     return redirect(`/property/${propertyId}`);
   }
@@ -6229,7 +6325,9 @@ ${countyAdapter ? `
 <p class="section-note">
 ${property.county === "St. Lucie"
   ? "St. Lucie is the first live direct-query adapter. It verifies an exact subject parcel and may add nearby public sale records to the Mini-Comp as candidates for human review."
-  : "This county source is registered. Its automatic parser is not live yet; the check records that status without changing property research."}
+  : PRIORITY_COUNTIES.has(property.county)
+  ? "This is a priority FLTract county. Automated retrieval is pending; official-source manual research remains available now."
+  : "FLTract supports this Florida county now through official-source manual research. Automation can be activated later without changing the Client or Property Record."}
 </p>
 ` : '<div class="empty">No official-data adapter is registered for this county.</div>'}
 
