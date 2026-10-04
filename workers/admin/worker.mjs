@@ -6259,6 +6259,7 @@ request.method === "GET" &&
   `).bind(propertyId).all();
 
   const countyAdapter = COUNTY_RESEARCH_ADAPTERS[property.county] || null;
+  const geography = geographyForCounty(property.county);
 
   const researchRunRows = researchRuns.results.length
     ? researchRuns.results.map(run => `
@@ -6371,6 +6372,8 @@ This adapter checks authoritative county-published property data before it enter
 
 <div class="grid">
 <div><div class="label">County</div><div class="value">${esc(property.county || "Not recorded")}</div></div>
+<div><div class="label">Florida Region</div><div class="value">${esc(geography.broadRegion)}</div></div>
+<div><div class="label">Market / Coast</div><div class="value"><strong>${esc(geography.marketRegion)}</strong></div></div>
 <div><div class="label">Adapter</div><div class="value">${esc(countyAdapter ? countyAdapter.status : "Not configured")}</div></div>
 <div><div class="label">Mode</div><div class="value">${esc(countyAdapter ? countyAdapter.mode : "—")}</div></div>
 <div><div class="label">Official Source</div><div class="value">${esc(countyAdapter ? countyAdapter.sourceName : "—")}</div></div>
