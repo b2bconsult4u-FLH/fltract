@@ -3924,14 +3924,14 @@ Save Status
 <div class="panel">
 
 <h2>
-${Number(inquiry.archived) === 1 ? "Restore Inquiry" : "Archive Inquiry"}
+${Number(inquiry.archived) === 1 ? "Reopen / Restore Inquiry" : "Archive Inquiry"}
 </h2>
 
 ${Number(inquiry.archived) === 1
 ?
 `
 <p class="section-note">
-This inquiry is archived. Archived records remain in FLTract with their full activity, consent, referral, and follow-up history, but they are removed from the active dashboard and automatic follow-up reminders. Restore the inquiry only if it should return to active work.
+This inquiry is archived. Archived records remain in FLTract with their full activity, consent, referral, and follow-up history, but they are removed from the active dashboard and automatic follow-up reminders. Use Reopen / Restore when the inquiry should return to active work. The original record and its full history remain intact.
 </p>
 
 <form
@@ -3940,7 +3940,7 @@ action="/inquiry/${id}/restore"
 >
 
 <label>
-<span>Restore Reason (optional)</span>
+<span>Reopen / Restore Reason (optional)</span>
 <textarea
 name="restore_reason"
 rows="3"
@@ -3951,7 +3951,7 @@ placeholder="Example: Archived in error; inquiry is still active."
 
 <div style="margin-top:14px">
 <button type="submit">
-Restore to Active Work Queue
+Reopen Inquiry
 </button>
 </div>
 
@@ -4578,7 +4578,7 @@ ${showArchived
 <div class="panel">
 <h2>Archived Records</h2>
 <p class="section-note">
-These inquiries are retained for audit, training, and historical reference but are excluded from the active management dashboard and automatic follow-up reminders. Open a record and use Restore Inquiry if it needs to return to active work.
+These inquiries are retained for audit, training, and historical reference but are excluded from the active management dashboard and automatic follow-up reminders. Open a record and use Reopen / Restore Inquiry if it needs to return to active work.
 </p>
 <a class="back" href="/">← Return to active inquiries</a>
 </div>
