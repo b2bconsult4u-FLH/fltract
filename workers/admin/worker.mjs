@@ -30,6 +30,19 @@ function csvCell(value) {
 }
 
 
+function detailField(details, label) {
+  const text = String(details || "");
+  const prefix = `${label}:`;
+  const line = text
+    .split(/\r?\n/)
+    .find(row => row.trim().toLowerCase().startsWith(prefix.toLowerCase()));
+
+  return line
+    ? line.trim().slice(prefix.length).trim()
+    : "";
+}
+
+
 function redirect(location) {
   return new Response(null, {
     status: 303,
@@ -3014,7 +3027,7 @@ ${esc(inquiry.acreage)}
 Timeframe
 </div>
 <div class="value">
-${esc(inquiry.timeframe || "Not recorded")}
+${esc(inquiry.timeframe || detailField(inquiry.details,"Timeframe") || "Not recorded")}
 </div>
 </div>
 
@@ -3023,7 +3036,7 @@ ${esc(inquiry.timeframe || "Not recorded")}
 Owner Status
 </div>
 <div class="value">
-${esc(inquiry.owner_status || "Not recorded")}
+${esc(inquiry.owner_status || detailField(inquiry.details,"Owner status") || "Not recorded")}
 </div>
 </div>
 
@@ -3032,7 +3045,7 @@ ${esc(inquiry.owner_status || "Not recorded")}
 Best Contact Time
 </div>
 <div class="value">
-${esc(inquiry.best_contact_time || "Not recorded")}
+${esc(inquiry.best_contact_time || detailField(inquiry.details,"Best contact time") || "Not recorded")}
 </div>
 </div>
 
@@ -3041,7 +3054,7 @@ ${esc(inquiry.best_contact_time || "Not recorded")}
 How Heard About FLTract
 </div>
 <div class="value">
-${esc(inquiry.referral_source || "Not recorded")}
+${esc(inquiry.referral_source || detailField(inquiry.details,"Referral source") || "Not recorded")}
 </div>
 </div>
 
@@ -3050,7 +3063,7 @@ ${esc(inquiry.referral_source || "Not recorded")}
 Source Page
 </div>
 <div class="value">
-${esc(inquiry.source_page || "Not recorded")}
+${esc(inquiry.source_page || detailField(inquiry.details,"Source page") || "Not recorded")}
 </div>
 </div>
 
