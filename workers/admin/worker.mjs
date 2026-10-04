@@ -3867,6 +3867,190 @@ headers:{
 
 
 /* ============================================================
+   CLIENT / PROPERTY ASSIGNMENTS
+   ============================================================ */
+
+if (
+request.method === "POST" &&
+/^\/client\/\d+\/assign$/.test(url.pathname)
+) {
+  if (!sameOriginPost(request)) return new Response("Invalid request origin.", {status:403});
+  if (!staff.authenticated || !staffCan(staff.user, "manage_assignments")) {
+    await logStaffAccess(env, staff, request, "Client Assignment", "Denied");
+    return new Response("You do not have permission to assign client records.", {status:403});
+  }
+
+  const clientId = Number(url.pathname.split("/").filter(Boolean)[1]);
+  const form = await request.formData();
+  const staffUserId = Number(form.get("staff_user_id"));
+  const assignmentRole = String(form.get("assignment_role") || "Primary");
+  const allowed = ["Primary","Support","Research"];
+
+  const target = await env.DB.prepare(`
+    SELECT id, email FROM staff_users WHERE id = ? AND active = 1 LIMIT 1
+  `).bind(staffUserId).first();
+
+  const client = await env.DB.prepare(`
+    SELECT id FROM clients WHERE id = ? LIMIT 1
+  `).bind(clientId).first();
+
+  if (!client || !target || !allowed.includes(assignmentRole)) {
+    return new Response("Invalid client assignment.", {status:400});
+  }
+
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO client_assignments (
+      client_id, staff_user_id, assignment_role, active, assigned_by_email
+    )
+    VALUES (?, ?, ?, 1, ?)
+  `).bind(clientId, staffUserId, assignmentRole, staff.email || "").run();
+
+  await env.DB.prepare(`
+    UPDATE client_assignments
+    SET assignment_role = ?, assigned_by_email = ?
+    WHERE client_id = ? AND staff_user_id = ? AND active = 1
+  `).bind(assignmentRole, staff.email || "", clientId, staffUserId).run();
+
+  await logStaffAccess(
+    env, staff, request, "Client Assigned", "Allowed",
+    `${clientCode(clientId)} -> ${target.email} (${assignmentRole})`
+  );
+
+  return redirect(`/client/${clientId}`);
+}
+
+
+if (
+request.method === "POST" &&
+/^\/client\/\d+\/assignment\/\d+\/end$/.test(url.pathname)
+) {
+  if (!sameOriginPost(request)) return new Response("Invalid request origin.", {status:403});
+  if (!staff.authenticated || !staffCan(staff.user, "manage_assignments")) {
+    return new Response("You do not have permission to change client assignments.", {status:403});
+  }
+
+  const parts = url.pathname.split("/").filter(Boolean);
+  const clientId = Number(parts[1]);
+  const assignmentId = Number(parts[3]);
+  const form = await request.formData();
+  const reason = String(form.get("reason") || "Reassigned / unassigned").trim().slice(0,500);
+
+  const assignment = await env.DB.prepare(`
+    SELECT ca.*, su.email
+    FROM client_assignments ca
+    JOIN staff_users su ON su.id = ca.staff_user_id
+    WHERE ca.id = ? AND ca.client_id = ? AND ca.active = 1
+    LIMIT 1
+  `).bind(assignmentId, clientId).first();
+
+  if (!assignment) return new Response("Active client assignment not found.", {status:404});
+
+  await env.DB.prepare(`
+    UPDATE client_assignments
+    SET active = 0, ended_at = CURRENT_TIMESTAMP, end_reason = ?
+    WHERE id = ?
+  `).bind(reason, assignmentId).run();
+
+  await logStaffAccess(
+    env, staff, request, "Client Assignment Ended", "Allowed",
+    `${clientCode(clientId)} -> ${assignment.email}; ${reason}`
+  );
+
+  return redirect(`/client/${clientId}`);
+}
+
+
+if (
+request.method === "POST" &&
+/^\/property\/\d+\/assign$/.test(url.pathname)
+) {
+  if (!sameOriginPost(request)) return new Response("Invalid request origin.", {status:403});
+  if (!staff.authenticated || !staffCan(staff.user, "manage_assignments")) {
+    await logStaffAccess(env, staff, request, "Property Assignment", "Denied");
+    return new Response("You do not have permission to assign property records.", {status:403});
+  }
+
+  const propertyId = Number(url.pathname.split("/").filter(Boolean)[1]);
+  const form = await request.formData();
+  const staffUserId = Number(form.get("staff_user_id"));
+  const assignmentRole = String(form.get("assignment_role") || "Primary");
+  const allowed = ["Primary","Support","Research"];
+
+  const target = await env.DB.prepare(`
+    SELECT id, email FROM staff_users WHERE id = ? AND active = 1 LIMIT 1
+  `).bind(staffUserId).first();
+
+  const property = await env.DB.prepare(`
+    SELECT id FROM properties WHERE id = ? LIMIT 1
+  `).bind(propertyId).first();
+
+  if (!property || !target || !allowed.includes(assignmentRole)) {
+    return new Response("Invalid property assignment.", {status:400});
+  }
+
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO property_assignments (
+      property_id, staff_user_id, assignment_role, active, assigned_by_email
+    )
+    VALUES (?, ?, ?, 1, ?)
+  `).bind(propertyId, staffUserId, assignmentRole, staff.email || "").run();
+
+  await env.DB.prepare(`
+    UPDATE property_assignments
+    SET assignment_role = ?, assigned_by_email = ?
+    WHERE property_id = ? AND staff_user_id = ? AND active = 1
+  `).bind(assignmentRole, staff.email || "", propertyId, staffUserId).run();
+
+  await logStaffAccess(
+    env, staff, request, "Property Assigned", "Allowed",
+    `${propertyCode(propertyId)} -> ${target.email} (${assignmentRole})`
+  );
+
+  return redirect(`/property/${propertyId}`);
+}
+
+
+if (
+request.method === "POST" &&
+/^\/property\/\d+\/assignment\/\d+\/end$/.test(url.pathname)
+) {
+  if (!sameOriginPost(request)) return new Response("Invalid request origin.", {status:403});
+  if (!staff.authenticated || !staffCan(staff.user, "manage_assignments")) {
+    return new Response("You do not have permission to change property assignments.", {status:403});
+  }
+
+  const parts = url.pathname.split("/").filter(Boolean);
+  const propertyId = Number(parts[1]);
+  const assignmentId = Number(parts[3]);
+  const form = await request.formData();
+  const reason = String(form.get("reason") || "Reassigned / unassigned").trim().slice(0,500);
+
+  const assignment = await env.DB.prepare(`
+    SELECT pa.*, su.email
+    FROM property_assignments pa
+    JOIN staff_users su ON su.id = pa.staff_user_id
+    WHERE pa.id = ? AND pa.property_id = ? AND pa.active = 1
+    LIMIT 1
+  `).bind(assignmentId, propertyId).first();
+
+  if (!assignment) return new Response("Active property assignment not found.", {status:404});
+
+  await env.DB.prepare(`
+    UPDATE property_assignments
+    SET active = 0, ended_at = CURRENT_TIMESTAMP, end_reason = ?
+    WHERE id = ?
+  `).bind(reason, assignmentId).run();
+
+  await logStaffAccess(
+    env, staff, request, "Property Assignment Ended", "Allowed",
+    `${propertyCode(propertyId)} -> ${assignment.email}; ${reason}`
+  );
+
+  return redirect(`/property/${propertyId}`);
+}
+
+
+/* ============================================================
    CLIENT ACCOUNT DIRECTORY
    ============================================================ */
 
