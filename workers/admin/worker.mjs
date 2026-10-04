@@ -170,6 +170,51 @@ async function ensureClientSchema(env) {
     env.DB.prepare(`
       CREATE INDEX IF NOT EXISTS idx_client_inquiries_client
       ON client_inquiries(client_id)
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS properties (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_id INTEGER NOT NULL,
+        primary_inquiry_id INTEGER UNIQUE,
+        property_location TEXT NOT NULL DEFAULT '',
+        county TEXT NOT NULL DEFAULT '',
+        property_type TEXT NOT NULL DEFAULT '',
+        acreage TEXT NOT NULL DEFAULT '',
+        parcel_id TEXT NOT NULL DEFAULT '',
+        legal_description TEXT NOT NULL DEFAULT '',
+        owner_name TEXT NOT NULL DEFAULT '',
+        owner_mailing_address TEXT NOT NULL DEFAULT '',
+        assessed_value TEXT NOT NULL DEFAULT '',
+        market_value TEXT NOT NULL DEFAULT '',
+        taxable_value TEXT NOT NULL DEFAULT '',
+        zoning TEXT NOT NULL DEFAULT '',
+        land_use TEXT NOT NULL DEFAULT '',
+        improvements TEXT NOT NULL DEFAULT '',
+        research_status TEXT NOT NULL DEFAULT 'Not Started',
+        data_source TEXT NOT NULL DEFAULT '',
+        data_verified_at TEXT,
+        notes TEXT NOT NULL DEFAULT '',
+        archived INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS property_inquiries (
+        property_id INTEGER NOT NULL,
+        inquiry_id INTEGER NOT NULL UNIQUE,
+        linked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        link_basis TEXT NOT NULL DEFAULT 'Inquiry Seed',
+        PRIMARY KEY (property_id, inquiry_id)
+      )
+    `),
+    env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_properties_client
+      ON properties(client_id)
+    `),
+    env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_property_inquiries_property
+      ON property_inquiries(property_id)
     `)
   ]);
 
@@ -249,6 +294,85 @@ async function ensureClientForInquiry(env, inquiry) {
   .run();
 
   return client;
+}
+
+function propertyCode(id) {
+  return `FLP-${String(Number(id) || 0).padStart(6, "0")}`;
+}
+
+async function ensurePropertyForInquiry(env, inquiry, clientId = null) {
+  await ensureClientSchema(env);
+
+  const existing =
+    await env.DB.prepare(`
+      SELECT p.*
+      FROM properties p
+      JOIN property_inquiries pi
+        ON pi.property_id = p.id
+      WHERE pi.inquiry_id = ?
+      LIMIT 1
+    `)
+    .bind(inquiry.id)
+    .first();
+
+  if (existing) return existing;
+
+  let resolvedClientId = Number(clientId) || 0;
+
+  if (!resolvedClientId) {
+    const client = await ensureClientForInquiry(env, inquiry);
+    resolvedClientId = Number(client?.id) || 0;
+  }
+
+  if (!resolvedClientId) return null;
+
+  const insert =
+    await env.DB.prepare(`
+      INSERT INTO properties (
+        client_id,
+        primary_inquiry_id,
+        property_location,
+        county,
+        property_type,
+        acreage,
+        improvements,
+        research_status
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'Not Started')
+    `)
+    .bind(
+      resolvedClientId,
+      inquiry.id,
+      inquiry.property_location || "",
+      inquiry.county || "",
+      inquiry.property_type || "",
+      inquiry.acreage || "",
+      inquiry.improvements || ""
+    )
+    .run();
+
+  const propertyId = Number(insert?.meta?.last_row_id) || 0;
+  if (!propertyId) return null;
+
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO property_inquiries (
+      property_id,
+      inquiry_id,
+      link_basis
+    )
+    VALUES (?, ?, 'Inquiry Seed')
+  `)
+  .bind(propertyId, inquiry.id)
+  .run();
+
+  return await env.DB.prepare(`
+    SELECT *
+    FROM properties
+    WHERE id = ?
+    LIMIT 1
+  `)
+  .bind(propertyId)
+  .first();
 }
 
 
@@ -2990,13 +3114,14 @@ LEFT JOIN client_inquiries ci
 WHERE
   ci.inquiry_id IS NULL
   AND TRIM(COALESCE(i.email,'')) <> ''
-ORDER BY i.id ASC
+ORDER BY i.created_at DESC, i.id DESC
 LIMIT 100
 `).all();
 
 for (const inquiry of unlinked.results) {
   try {
-    await ensureClientForInquiry(env, inquiry);
+    const client = await ensureClientForInquiry(env, inquiry);
+    await ensurePropertyForInquiry(env, inquiry, client?.id);
   }
   catch (error) {
     console.error(
@@ -3161,6 +3286,21 @@ ORDER BY i.created_at DESC, i.id DESC
 const latestInquiry =
 inquiries.results[0] || null;
 
+const properties =
+await env.DB.prepare(`
+SELECT
+p.*,
+COUNT(pi.inquiry_id) AS inquiry_count
+FROM properties p
+LEFT JOIN property_inquiries pi
+  ON pi.property_id = p.id
+WHERE p.client_id = ?
+GROUP BY p.id
+ORDER BY p.created_at DESC, p.id DESC
+`)
+.bind(clientId)
+.all();
+
 const referrals =
 await env.DB.prepare(`
 SELECT
@@ -3225,6 +3365,22 @@ const textStatus =
 latestInquiry
 ? textContactStatus(latestInquiry)
 : {text:"NO TEXT CONSENT",css:"muted"};
+
+const propertyRows =
+properties.results.length
+?
+properties.results.map(p => `
+<tr>
+<td><a href="/property/${p.id}"><strong>${esc(propertyCode(p.id))}</strong></a></td>
+<td>${esc(p.property_location || "Not recorded")}</td>
+<td>${esc(p.county || "")}</td>
+<td>${esc(p.property_type || "")}</td>
+<td>${esc(p.parcel_id || "Not researched")}</td>
+<td>${esc(p.research_status || "Not Started")}</td>
+</tr>
+`).join("")
+:
+`<tr><td colspan="6" class="empty">No property records yet.</td></tr>`;
 
 const inquiryRows =
 inquiries.results.length
@@ -3394,11 +3550,39 @@ These traffic lights reflect the client's most recent linked inquiry. Always ope
 <div class="panel">
 
 <h2>
-Properties &amp; Inquiries
+Property Records
 </h2>
 
 <p class="section-note">
-Each row is a separate inquiry/property record belonging to this client. A client can have several active or archived properties at the same time.
+A Property Record is the durable research file for a parcel or tract. It is separate from the client's inquiry so parcel ID, legal description, values, zoning, ownership, and research can be maintained without rewriting the original intake record.
+</p>
+
+<table>
+<thead>
+<tr>
+<th>Property ID</th>
+<th>Location</th>
+<th>County</th>
+<th>Type</th>
+<th>Parcel ID</th>
+<th>Research</th>
+</tr>
+</thead>
+<tbody>
+${propertyRows}
+</tbody>
+</table>
+
+</div>
+
+<div class="panel">
+
+<h2>
+Inquiry History
+</h2>
+
+<p class="section-note">
+These are the client's original inquiry records. They remain separate for consent, referral, follow-up, and audit history even when linked to a Property Record.
 </p>
 
 <table>
@@ -3507,6 +3691,245 @@ headers:{
 
 
 /* ============================================================
+   PROPERTY RECORD
+   ============================================================ */
+
+if (
+request.method === "POST" &&
+/^\/property\/\d+\/update$/.test(url.pathname)
+) {
+  if (!sameOriginPost(request)) {
+    return new Response("Invalid request origin.", {status:403});
+  }
+
+  const propertyId = Number(url.pathname.split("/").filter(Boolean)[1]);
+  const form = await request.formData();
+
+  const field = (name, max = 4000) =>
+    String(form.get(name) || "").trim().slice(0, max);
+
+  const researchStatus = field("research_status", 100);
+  const allowedResearch = [
+    "Not Started",
+    "Researching",
+    "Needs Verification",
+    "Ready for Mini-Comp",
+    "Research Complete"
+  ];
+
+  if (!allowedResearch.includes(researchStatus)) {
+    return new Response("Invalid research status.", {status:400});
+  }
+
+  const property = await env.DB.prepare(`
+    SELECT * FROM properties WHERE id = ? LIMIT 1
+  `).bind(propertyId).first();
+
+  if (!property) {
+    return new Response("Property record not found.", {status:404});
+  }
+
+  await env.DB.prepare(`
+    UPDATE properties
+    SET
+      property_location = ?,
+      county = ?,
+      property_type = ?,
+      acreage = ?,
+      parcel_id = ?,
+      legal_description = ?,
+      owner_name = ?,
+      owner_mailing_address = ?,
+      assessed_value = ?,
+      market_value = ?,
+      taxable_value = ?,
+      zoning = ?,
+      land_use = ?,
+      improvements = ?,
+      research_status = ?,
+      data_source = ?,
+      data_verified_at = CASE
+        WHEN ? <> '' THEN CURRENT_TIMESTAMP
+        ELSE data_verified_at
+      END,
+      notes = ?,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).bind(
+    field("property_location", 1000),
+    field("county", 200),
+    field("property_type", 300),
+    field("acreage", 200),
+    field("parcel_id", 300),
+    field("legal_description", 8000),
+    field("owner_name", 500),
+    field("owner_mailing_address", 1000),
+    field("assessed_value", 200),
+    field("market_value", 200),
+    field("taxable_value", 200),
+    field("zoning", 300),
+    field("land_use", 500),
+    field("improvements", 1000),
+    researchStatus,
+    field("data_source", 1000),
+    field("mark_verified", 10),
+    field("notes", 8000),
+    propertyId
+  ).run();
+
+  if (property.primary_inquiry_id) {
+    await env.DB.prepare(`
+      INSERT INTO activity_log (
+        inquiry_id,
+        activity_type,
+        activity_note
+      )
+      VALUES (?, 'Property Research Updated', ?)
+    `).bind(
+      property.primary_inquiry_id,
+      `Property ${propertyCode(propertyId)} research record updated. Status: ${researchStatus}.`
+    ).run();
+  }
+
+  return redirect(`/property/${propertyId}`);
+}
+
+
+if (
+request.method === "GET" &&
+/^\/property\/\d+$/.test(url.pathname)
+) {
+  const propertyId = Number(url.pathname.split("/").filter(Boolean)[1]);
+
+  const property = await env.DB.prepare(`
+    SELECT
+      p.*,
+      c.first_name,
+      c.last_name,
+      c.email,
+      c.phone
+    FROM properties p
+    JOIN clients c ON c.id = p.client_id
+    WHERE p.id = ?
+    LIMIT 1
+  `).bind(propertyId).first();
+
+  if (!property) {
+    return new Response("Property record not found.", {status:404});
+  }
+
+  const linkedInquiries = await env.DB.prepare(`
+    SELECT i.*
+    FROM property_inquiries pi
+    JOIN inquiries i ON i.id = pi.inquiry_id
+    WHERE pi.property_id = ?
+    ORDER BY i.created_at DESC, i.id DESC
+  `).bind(propertyId).all();
+
+  const researchOptions = [
+    "Not Started",
+    "Researching",
+    "Needs Verification",
+    "Ready for Mini-Comp",
+    "Research Complete"
+  ].map(s => `
+    <option value="${esc(s)}" ${property.research_status === s ? "selected" : ""}>
+      ${esc(s)}
+    </option>
+  `).join("");
+
+  const inquiryLinks = linkedInquiries.results.length
+    ? linkedInquiries.results.map(i => `
+      <div class="value">
+        <a href="/inquiry/${i.id}">Inquiry #${esc(i.id)}</a>
+        — ${esc(inquiryTypeDisplay(i.inquiry_type))}
+        — ${esc(i.status || "")}
+      </div>
+    `).join("")
+    : '<div class="empty">No linked inquiries.</div>';
+
+  return new Response(
+    page(`
+
+<a class="back" href="/client/${property.client_id}">
+← Back to Client ${esc(clientCode(property.client_id))}
+</a>
+
+<div class="panel">
+<h1>Property ${esc(propertyCode(property.id))}</h1>
+
+<p class="section-note">
+This is the durable FLTract property research record. Client-submitted intake information seeds the record, but research fields should be verified against the appropriate Florida county Property Appraiser or other authoritative published source before they are used in a report.
+</p>
+
+<div class="grid">
+<div><div class="label">Client</div><div class="value"><a href="/client/${property.client_id}">${esc(clientCode(property.client_id))} — ${esc(property.first_name)} ${esc(property.last_name)}</a></div></div>
+<div><div class="label">Property ID</div><div class="value"><strong>${esc(propertyCode(property.id))}</strong></div></div>
+<div><div class="label">Research Status</div><div class="value">${esc(property.research_status || "Not Started")}</div></div>
+<div><div class="label">Last Updated</div><div class="value">${esc(floridaTime(property.updated_at))}</div></div>
+</div>
+</div>
+
+<div class="panel">
+<h2>Property Research Workspace</h2>
+
+<p class="section-note">
+Use this panel to validate the property and record published research. Keep the original inquiry unchanged. Enter the parcel ID and source exactly as published; legal description, ownership, values, zoning, and land use should remain attributable to their source.
+</p>
+
+<form method="post" action="/property/${property.id}/update">
+
+<div class="form-grid">
+<label><span>Property Location</span><input name="property_location" maxlength="1000" value="${esc(property.property_location)}"></label>
+<label><span>County</span><input name="county" maxlength="200" value="${esc(property.county)}"></label>
+<label><span>Property Type</span><input name="property_type" maxlength="300" value="${esc(property.property_type)}"></label>
+<label><span>Acreage</span><input name="acreage" maxlength="200" value="${esc(property.acreage)}"></label>
+<label><span>Parcel ID / Account Number</span><input name="parcel_id" maxlength="300" value="${esc(property.parcel_id)}"></label>
+<label><span>Owner Name</span><input name="owner_name" maxlength="500" value="${esc(property.owner_name)}"></label>
+<label class="full"><span>Owner Mailing Address</span><input name="owner_mailing_address" maxlength="1000" value="${esc(property.owner_mailing_address)}"></label>
+<label class="full"><span>Legal Description</span><textarea name="legal_description" rows="5" maxlength="8000">${esc(property.legal_description)}</textarea></label>
+<label><span>Assessed Value</span><input name="assessed_value" maxlength="200" value="${esc(property.assessed_value)}"></label>
+<label><span>Market / Just Value</span><input name="market_value" maxlength="200" value="${esc(property.market_value)}"></label>
+<label><span>Taxable Value</span><input name="taxable_value" maxlength="200" value="${esc(property.taxable_value)}"></label>
+<label><span>Zoning</span><input name="zoning" maxlength="300" value="${esc(property.zoning)}"></label>
+<label class="full"><span>Land Use / Classification</span><input name="land_use" maxlength="500" value="${esc(property.land_use)}"></label>
+<label class="full"><span>Improvements</span><textarea name="improvements" rows="3" maxlength="1000">${esc(property.improvements)}</textarea></label>
+<label><span>Research Status</span><select name="research_status" required>${researchOptions}</select></label>
+<label><span>Published Data Source</span><input name="data_source" maxlength="1000" value="${esc(property.data_source)}" placeholder="Example: Indian River County Property Appraiser"></label>
+<label class="full"><span>Research Notes</span><textarea name="notes" rows="5" maxlength="8000">${esc(property.notes)}</textarea></label>
+<label class="full"><span><input type="checkbox" name="mark_verified" value="yes"> Mark published data verified now</span></label>
+</div>
+
+<div style="margin-top:14px">
+<button type="submit">Save Property Research</button>
+</div>
+</form>
+
+<p class="section-note">
+Saving updates the Property Record and writes a Property Research Updated event to the original inquiry's Activity History. It does not send anything to the client and does not create a valuation or mini-comp.
+</p>
+</div>
+
+<div class="panel">
+<h2>Linked Inquiry Records</h2>
+<p class="section-note">
+Inquiry records preserve what the client originally submitted, plus consent, referral, follow-up, and audit history. Property research does not overwrite them.
+</p>
+${inquiryLinks}
+</div>
+
+`),
+    {
+      headers:{
+        "content-type":"text/html; charset=utf-8",
+        "cache-control":"no-store"
+      }
+    }
+  );
+}
+
+
+/* ============================================================
    INQUIRY DETAIL
    ============================================================ */
 
@@ -3542,6 +3965,7 @@ return new Response(
 
 
 let clientAccount = null;
+let propertyRecord = null;
 
 try {
 clientAccount =
@@ -3549,10 +3973,17 @@ await ensureClientForInquiry(
 env,
 inquiry
 );
+
+propertyRecord =
+await ensurePropertyForInquiry(
+env,
+inquiry,
+clientAccount?.id
+);
 }
 catch (error) {
 console.error(
-"Client account link failed for inquiry",
+"Client/property account link failed for inquiry",
 id,
 error
 );
@@ -4344,6 +4775,41 @@ Open Client Account →
 : `
 <div class="empty">
 No client account could be linked automatically. Review this record manually before linking it to another person.
+</div>
+`}
+
+</div>
+
+
+<div class="panel">
+
+<h2>
+Property Record
+</h2>
+
+<p class="section-note">
+The Property Record is the research workspace for this tract. It keeps parcel, ownership, legal-description, value, zoning, land-use, and research information separate from the client's original inquiry.
+</p>
+
+${propertyRecord
+? `
+<div class="action-row">
+<div>
+<div class="label">Property ID</div>
+<div class="value"><strong>${esc(propertyCode(propertyRecord.id))}</strong></div>
+</div>
+<div>
+<div class="label">Research Status</div>
+<div class="value">${esc(propertyRecord.research_status || "Not Started")}</div>
+</div>
+<a class="back" href="/property/${propertyRecord.id}">
+Open Property Record →
+</a>
+</div>
+`
+: `
+<div class="empty">
+No Property Record could be created automatically. Review the Client Account link before creating property research.
 </div>
 `}
 
