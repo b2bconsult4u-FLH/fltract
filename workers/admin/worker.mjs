@@ -914,10 +914,10 @@ const BROAD_REGION_GROUPS = {
   "North Central Florida": ["Gadsden","Liberty","Leon","Wakulla","Jefferson","Madison","Taylor","Hamilton","Suwannee","Lafayette","Columbia","Dixie","Alachua","Gilchrist","Levy"],
   "Northeast Florida": ["Nassau","Duval","Baker","Clay","St. Johns","Putnam","Flagler","Bradford","Union"],
   "Central Florida": ["Marion","Lake","Sumter","Seminole","Orange","Osceola","Polk","Hardee","Highlands"],
-  "Central East Florida": ["Volusia","Brevard","Indian River","St. Lucie","Martin","Okeechobee"],
-  "Central West Florida": ["Citrus","Hernando","Pasco","Pinellas","Hillsborough","Manatee","Sarasota"],
-  "Southeast Florida": ["Palm Beach","Broward","Miami-Dade","Monroe"],
-  "Southwest Florida": ["DeSoto","Charlotte","Lee","Glades","Hendry","Collier"]
+  "Central East Florida": ["Volusia","Brevard","Indian River","St. Lucie","Okeechobee"],
+  "Central West Florida": ["Citrus","Hernando","Pasco","Pinellas","Hillsborough"],
+  "Southeast Florida": ["Martin","Palm Beach","Broward","Miami-Dade","Monroe"],
+  "Southwest Florida": ["Manatee","Sarasota","DeSoto","Charlotte","Lee","Glades","Hendry","Collier"]
 };
 
 const MARKET_REGION_GROUPS = {
