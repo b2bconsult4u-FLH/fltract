@@ -3593,7 +3593,7 @@ Approx. acreage: ${esc(inquiry.acreage)}
 Property location: ${esc(inquiry.property_location)}
 
 Client inquiry:
-${esc(inquiry.details)}
+${esc(clientDetailsDisplay(inquiry.details) || "No additional client details provided.")}
 
 Please review the inquiry and contact the client directly as appropriate.
 
