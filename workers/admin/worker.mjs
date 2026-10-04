@@ -710,6 +710,20 @@ ${body}
 
 </main>
 
+<script>
+function setFollowupDate(id, days) {
+  const input = document.getElementById(id);
+  if (!input) return;
+  const date = new Date();
+  date.setHours(12,0,0,0);
+  date.setDate(date.getDate() + Number(days || 0));
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  input.value = y + "-" + m + "-" + d;
+}
+</script>
+
 </body>
 
 </html>`;
@@ -2042,6 +2056,18 @@ form.get("completed_note") || ""
 ).trim().slice(0,4000);
 
 
+const nextDueDate =
+String(
+form.get("next_due_date") || ""
+).trim();
+
+
+const nextReason =
+String(
+form.get("next_reason") || ""
+).trim().slice(0,1000);
+
+
 if (
 !id ||
 !Number.isInteger(followupId)
@@ -2073,6 +2099,60 @@ followupId,
 id
 )
 .run();
+
+
+if (nextDueDate || nextReason) {
+
+if (
+!/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(nextDueDate) ||
+!nextReason
+) {
+return new Response(
+"To schedule the next follow-up, both a valid date and reason are required.",
+{status:400}
+);
+}
+
+await env.DB.prepare(`
+INSERT INTO follow_ups (
+inquiry_id,
+due_date,
+reason,
+status
+)
+VALUES (
+?,
+?,
+?,
+'Open'
+)
+`)
+.bind(
+id,
+nextDueDate,
+nextReason
+)
+.run();
+
+await env.DB.prepare(`
+INSERT INTO activity_log (
+inquiry_id,
+activity_type,
+activity_note
+)
+VALUES (
+?,
+'Follow Up Scheduled',
+?
+)
+`)
+.bind(
+id,
+`Next follow up scheduled for ${nextDueDate}: ${nextReason}`
+)
+.run();
+
+}
 
 
 const nextOpen =
@@ -2895,14 +2975,46 @@ Completion Note
 name="completed_note"
 rows="3"
 maxlength="4000"
+placeholder="What happened on this follow-up?"
 ></textarea>
 
 </label>
 
+<div class="form-grid" style="margin-top:14px">
+
+<label>
+<span>Next Follow-Up Date (optional)</span>
+<input
+type="date"
+name="next_due_date"
+id="next-followup-${f.id}"
+>
+</label>
+
+<label>
+<span>Next Follow-Up Reason (optional)</span>
+<input
+name="next_reason"
+maxlength="1000"
+placeholder="Example: Check whether broker reached client"
+>
+</label>
+
+</div>
+
 <div style="margin-top:10px">
+<span class="small">Quick next date:</span>
+<button type="button" onclick="setFollowupDate('next-followup-${f.id}',1)">Tomorrow</button>
+<button type="button" onclick="setFollowupDate('next-followup-${f.id}',3)">3 Days</button>
+<button type="button" onclick="setFollowupDate('next-followup-${f.id}',7)">7 Days</button>
+<button type="button" onclick="setFollowupDate('next-followup-${f.id}',14)">14 Days</button>
+<button type="button" onclick="setFollowupDate('next-followup-${f.id}',30)">30 Days</button>
+</div>
+
+<div style="margin-top:12px">
 
 <button type="submit">
-Follow Up Complete
+Complete Follow Up
 </button>
 
 </div>
@@ -3476,8 +3588,18 @@ Follow-Up Date
 <input
 type="date"
 name="due_date"
+id="new-followup-date"
 required
 >
+
+<div style="margin-top:8px">
+<span class="small">Quick date:</span>
+<button type="button" onclick="setFollowupDate('new-followup-date',1)">Tomorrow</button>
+<button type="button" onclick="setFollowupDate('new-followup-date',3)">3 Days</button>
+<button type="button" onclick="setFollowupDate('new-followup-date',7)">7 Days</button>
+<button type="button" onclick="setFollowupDate('new-followup-date',14)">14 Days</button>
+<button type="button" onclick="setFollowupDate('new-followup-date',30)">30 Days</button>
+</div>
 
 </label>
 
