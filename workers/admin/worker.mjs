@@ -275,6 +275,48 @@ async function ensureClientSchema(env) {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_mini_comp_queue_open
       ON mini_comp_queue(property_id, task_type)
       WHERE status IN ('Queued','Processing','Retry')
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS report_library_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_id INTEGER NOT NULL,
+        property_id INTEGER NOT NULL,
+        report_type TEXT NOT NULL,
+        source_table TEXT NOT NULL,
+        source_id INTEGER NOT NULL,
+        title TEXT NOT NULL DEFAULT '',
+        current_status TEXT NOT NULL DEFAULT 'Draft',
+        current_version INTEGER NOT NULL DEFAULT 0,
+        current_route TEXT NOT NULL DEFAULT '',
+        archived INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(source_table, source_id)
+      )
+    `),
+    env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_report_library_property
+      ON report_library_items(property_id, updated_at)
+    `),
+    env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_report_library_client
+      ON report_library_items(client_id, updated_at)
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS report_library_versions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        library_item_id INTEGER NOT NULL,
+        version_number INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'Approved',
+        snapshot_json TEXT NOT NULL,
+        approved_at TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(library_item_id, version_number)
+      )
+    `),
+    env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_report_versions_item
+      ON report_library_versions(library_item_id, version_number)
     `)
   ]);
 
@@ -474,7 +516,127 @@ async function ensureMiniCompForProperty(env, propertyId) {
   .bind(propertyId, report.id)
   .run();
 
+  await ensureLibraryItemForMiniComp(env, propertyId, report);
+
   return report;
+}
+
+async function ensureLibraryItemForMiniComp(env, propertyId, report) {
+  const property = await env.DB.prepare(`
+    SELECT client_id
+    FROM properties
+    WHERE id = ?
+    LIMIT 1
+  `).bind(propertyId).first();
+
+  if (!property || !report) return null;
+
+  const title = `Mini-Comp — ${propertyCode(propertyId)}`;
+  const route = `/property/${propertyId}/mini-comp/report`;
+
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO report_library_items (
+      client_id,
+      property_id,
+      report_type,
+      source_table,
+      source_id,
+      title,
+      current_status,
+      current_route
+    )
+    VALUES (?, ?, 'Mini-Comp', 'mini_comp_reports', ?, ?, ?, ?)
+  `).bind(
+    property.client_id,
+    propertyId,
+    report.id,
+    title,
+    report.status || "Needs Research",
+    route
+  ).run();
+
+  await env.DB.prepare(`
+    UPDATE report_library_items
+    SET
+      client_id = ?,
+      property_id = ?,
+      title = ?,
+      current_status = ?,
+      current_route = ?,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE source_table = 'mini_comp_reports'
+      AND source_id = ?
+  `).bind(
+    property.client_id,
+    propertyId,
+    title,
+    report.status || "Needs Research",
+    route,
+    report.id
+  ).run();
+
+  return env.DB.prepare(`
+    SELECT *
+    FROM report_library_items
+    WHERE source_table = 'mini_comp_reports'
+      AND source_id = ?
+    LIMIT 1
+  `).bind(report.id).first();
+}
+
+async function syncMiniCompLibraryStatus(env, propertyId, reportId) {
+  const report = await env.DB.prepare(`
+    SELECT *
+    FROM mini_comp_reports
+    WHERE id = ?
+    LIMIT 1
+  `).bind(reportId).first();
+
+  if (!report) return null;
+  return ensureLibraryItemForMiniComp(env, propertyId, report);
+}
+
+async function snapshotApprovedMiniComp(env, property, report) {
+  const item = await ensureLibraryItemForMiniComp(env, property.id, report);
+  if (!item) return null;
+
+  const comps = await env.DB.prepare(`
+    SELECT *
+    FROM mini_comp_comparables
+    WHERE report_id = ?
+    ORDER BY sale_date DESC, id DESC
+  `).bind(report.id).all();
+
+  const nextVersion = Number(item.current_version || 0) + 1;
+  const snapshot = JSON.stringify({
+    snapshot_type:"FLTract Mini-Comp",
+    property,
+    report,
+    comparables:comps.results,
+    captured_at:new Date().toISOString()
+  });
+
+  await env.DB.prepare(`
+    INSERT INTO report_library_versions (
+      library_item_id,
+      version_number,
+      status,
+      snapshot_json,
+      approved_at
+    )
+    VALUES (?, ?, 'Approved', ?, CURRENT_TIMESTAMP)
+  `).bind(item.id, nextVersion, snapshot).run();
+
+  await env.DB.prepare(`
+    UPDATE report_library_items
+    SET
+      current_status = 'Approved',
+      current_version = ?,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).bind(nextVersion, item.id).run();
+
+  return nextVersion;
 }
 
 function numberOrNull(value) {
@@ -3940,6 +4102,8 @@ request.method === "POST" &&
     WHERE id = ?
   `).bind(report.id).run();
 
+  await syncMiniCompLibraryStatus(env, propertyId, report.id);
+
   if (property.primary_inquiry_id) {
     await env.DB.prepare(`
       INSERT INTO activity_log (inquiry_id, activity_type, activity_note)
@@ -3977,6 +4141,8 @@ request.method === "POST" &&
     SET status = 'Draft', approved_at = NULL, updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
   `).bind(report.id).run();
+
+  await syncMiniCompLibraryStatus(env, propertyId, report.id);
 
   return redirect(`/property/${propertyId}/mini-comp`);
 }
@@ -4044,6 +4210,8 @@ request.method === "POST" &&
       AND status IN ('Queued','Processing','Retry')
   `).bind(status, report.id).run();
 
+  await syncMiniCompLibraryStatus(env, propertyId, report.id);
+
   return redirect(`/property/${propertyId}/mini-comp`);
 }
 
@@ -4102,13 +4270,23 @@ request.method === "POST" &&
     WHERE id = ?
   `).bind(report.id).run();
 
+  const approvedReport = await env.DB.prepare(`
+    SELECT *
+    FROM mini_comp_reports
+    WHERE id = ?
+    LIMIT 1
+  `).bind(report.id).first();
+
+  const approvedVersion =
+    await snapshotApprovedMiniComp(env, property, approvedReport);
+
   if (property.primary_inquiry_id) {
     await env.DB.prepare(`
       INSERT INTO activity_log (inquiry_id, activity_type, activity_note)
       VALUES (?, 'Mini-Comp Approved', ?)
     `).bind(
       property.primary_inquiry_id,
-      `Mini-comp for ${propertyCode(propertyId)} approved after human review. No client communication was sent.`
+      `Mini-comp for ${propertyCode(propertyId)} approved as library version ${approvedVersion || "recorded"}. No client communication was sent.`
     ).run();
   }
 
@@ -4472,6 +4650,244 @@ ${approvalReady
 
 
 /* ============================================================
+   RESEARCH & REPORT LIBRARY
+   ============================================================ */
+
+if (
+request.method === "GET" &&
+/^\/property\/\d+\/library$/.test(url.pathname)
+) {
+  const propertyId = Number(url.pathname.split("/").filter(Boolean)[1]);
+
+  const property = await env.DB.prepare(`
+    SELECT p.*, c.first_name, c.last_name
+    FROM properties p
+    JOIN clients c ON c.id = p.client_id
+    WHERE p.id = ?
+    LIMIT 1
+  `).bind(propertyId).first();
+
+  if (!property) return new Response("Property record not found.", {status:404});
+
+  const miniComp = await ensureMiniCompForProperty(env, propertyId);
+  if (miniComp) await ensureLibraryItemForMiniComp(env, propertyId, miniComp);
+
+  const items = await env.DB.prepare(`
+    SELECT *
+    FROM report_library_items
+    WHERE property_id = ?
+      AND archived = 0
+    ORDER BY updated_at DESC, id DESC
+  `).bind(propertyId).all();
+
+  const itemRows = items.results.length
+    ? items.results.map(item => `
+<tr>
+<td><strong>${esc(item.title)}</strong><br><span class="small">${esc(item.report_type)}</span></td>
+<td><span class="badge ${item.current_status === "Approved" ? "good" : item.current_status === "Insufficient Data" ? "danger" : "warning"}">${esc(item.current_status)}</span></td>
+<td>${item.current_version ? `v${esc(item.current_version)}` : "No approved version"}</td>
+<td>${esc(floridaTime(item.updated_at))}</td>
+<td><a href="/library/item/${item.id}">Open Library Record →</a></td>
+</tr>`).join("")
+    : '<tr><td colspan="5" class="empty">No report records yet.</td></tr>';
+
+  return new Response(
+    page(`
+<a class="back" href="/property/${propertyId}">← Back to Property ${esc(propertyCode(propertyId))}</a>
+
+<div class="panel">
+<h1>Research &amp; Report Library</h1>
+<p class="section-note">
+This is the permanent private record of structured FLTract research products for this property. Approved versions are preserved as immutable snapshots instead of being overwritten by later research. This library is not a public file-upload area and nothing here is automatically sent to the client.
+</p>
+<div class="grid">
+<div><div class="label">Client</div><div class="value">${esc(property.first_name)} ${esc(property.last_name)}</div></div>
+<div><div class="label">Property</div><div class="value">${esc(propertyCode(propertyId))}</div></div>
+<div><div class="label">Location</div><div class="value">${esc(property.property_location || "Not recorded")}</div></div>
+<div><div class="label">Parcel ID</div><div class="value">${esc(property.parcel_id || "Not recorded")}</div></div>
+</div>
+</div>
+
+<div class="panel">
+<h2>Library Records</h2>
+<table>
+<thead><tr><th>Report</th><th>Current Status</th><th>Approved Version</th><th>Updated</th><th></th></tr></thead>
+<tbody>${itemRows}</tbody>
+</table>
+</div>
+`, `FLTract Library — ${propertyCode(propertyId)}`),
+    {headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store"}}
+  );
+}
+
+
+if (
+request.method === "GET" &&
+/^\/library\/item\/\d+$/.test(url.pathname)
+) {
+  const itemId = Number(url.pathname.split("/").filter(Boolean)[2]);
+
+  const item = await env.DB.prepare(`
+    SELECT rli.*, p.property_location
+    FROM report_library_items rli
+    JOIN properties p ON p.id = rli.property_id
+    WHERE rli.id = ?
+    LIMIT 1
+  `).bind(itemId).first();
+
+  if (!item) return new Response("Library record not found.", {status:404});
+
+  const versions = await env.DB.prepare(`
+    SELECT id, version_number, status, approved_at, created_at
+    FROM report_library_versions
+    WHERE library_item_id = ?
+    ORDER BY version_number DESC
+  `).bind(itemId).all();
+
+  const versionRows = versions.results.length
+    ? versions.results.map(v => `
+<tr>
+<td>v${esc(v.version_number)}</td>
+<td><span class="badge good">${esc(v.status)}</span></td>
+<td>${esc(floridaTime(v.approved_at || v.created_at))}</td>
+<td><a href="/library/version/${v.id}">Open Preserved Version →</a></td>
+</tr>`).join("")
+    : '<tr><td colspan="4" class="empty">No approved versions have been preserved yet.</td></tr>';
+
+  return new Response(
+    page(`
+<a class="back" href="/property/${item.property_id}/library">← Back to Research &amp; Report Library</a>
+
+<div class="panel">
+<h1>${esc(item.title)}</h1>
+<p class="section-note">
+The current working report may continue to change during research. Every approved version below is a preserved snapshot and remains available even after later revisions.
+</p>
+<div class="grid">
+<div><div class="label">Type</div><div class="value">${esc(item.report_type)}</div></div>
+<div><div class="label">Current Status</div><div class="value">${esc(item.current_status)}</div></div>
+<div><div class="label">Latest Approved Version</div><div class="value">${item.current_version ? `v${esc(item.current_version)}` : "None"}</div></div>
+<div><div class="label">Property</div><div class="value">${esc(propertyCode(item.property_id))} — ${esc(item.property_location || "")}</div></div>
+</div>
+<div style="margin-top:16px"><a href="${esc(item.current_route)}">Open Current Structured Report →</a></div>
+</div>
+
+<div class="panel">
+<h2>Approved Version History</h2>
+<table>
+<thead><tr><th>Version</th><th>Status</th><th>Approved</th><th></th></tr></thead>
+<tbody>${versionRows}</tbody>
+</table>
+</div>
+`, item.title),
+    {headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store"}}
+  );
+}
+
+
+if (
+request.method === "GET" &&
+/^\/library\/version\/\d+$/.test(url.pathname)
+) {
+  const versionId = Number(url.pathname.split("/").filter(Boolean)[2]);
+
+  const version = await env.DB.prepare(`
+    SELECT rlv.*, rli.title, rli.property_id
+    FROM report_library_versions rlv
+    JOIN report_library_items rli ON rli.id = rlv.library_item_id
+    WHERE rlv.id = ?
+    LIMIT 1
+  `).bind(versionId).first();
+
+  if (!version) return new Response("Preserved report version not found.", {status:404});
+
+  let snapshot = {};
+  try { snapshot = JSON.parse(version.snapshot_json || "{}"); } catch {}
+
+  const property = snapshot.property || {};
+  const report = snapshot.report || {};
+  const comps = Array.isArray(snapshot.comparables) ? snapshot.comparables : [];
+  const metrics = miniCompMetrics(comps);
+
+  const rows = comps.length
+    ? comps.map((comp,index) => {
+        const ppa = Number(comp.sale_price) > 0 && Number(comp.acreage) > 0
+          ? Number(comp.sale_price) / Number(comp.acreage)
+          : null;
+        return `
+<tr>
+<td>${index + 1}</td>
+<td>${esc(comp.property_location || "Not recorded")}</td>
+<td>${esc(comp.sale_date || "")}</td>
+<td>${esc(money(comp.sale_price))}</td>
+<td>${esc(decimal(comp.acreage))}</td>
+<td>${esc(money(ppa))}</td>
+<td>${esc(comp.qualified_sale || "")}</td>
+<td>${esc(comp.source_name || "")}</td>
+</tr>`;
+      }).join("")
+    : '<tr><td colspan="8" class="empty">No comparable records in this preserved version.</td></tr>';
+
+  return new Response(
+    page(`
+<style>
+@media print{
+  header,.no-print{display:none !important;}
+  body{background:#fff;}
+  main{padding:0;}
+  .wrap{width:100%;}
+  .panel{box-shadow:none;break-inside:avoid;}
+}
+</style>
+
+<div class="no-print">
+<a class="back" href="/library/item/${version.library_item_id}">← Back to Library Record</a>
+<button type="button" onclick="window.print()">Print / Save as PDF</button>
+</div>
+
+<div class="panel">
+<h1>${esc(version.title)} — v${esc(version.version_number)}</h1>
+<p class="section-note">
+PRESERVED APPROVED VERSION. This snapshot is retained for audit and report history and is not altered when the current working report changes.
+</p>
+<div class="grid">
+<div><div class="label">Approved</div><div class="value">${esc(floridaTime(version.approved_at || version.created_at))}</div></div>
+<div><div class="label">Property ID</div><div class="value">${esc(propertyCode(version.property_id))}</div></div>
+<div><div class="label">Location</div><div class="value">${esc(property.property_location || "")}</div></div>
+<div><div class="label">Parcel</div><div class="value">${esc(property.parcel_id || "")}</div></div>
+</div>
+</div>
+
+<div class="panel">
+<h2>Executive Summary</h2>
+<div class="value note">${esc(report.executive_summary || "No executive summary recorded.")}</div>
+</div>
+
+<div class="panel">
+<h2>Comparable Summary</h2>
+<div class="summary-grid">
+<div class="summary-card"><div class="label">Sales</div><div class="summary-number">${metrics.total}</div></div>
+<div class="summary-card"><div class="label">Median Sale Price</div><div class="summary-number">${esc(money(metrics.medianPrice))}</div></div>
+<div class="summary-card"><div class="label">Median Price / Acre</div><div class="summary-number">${esc(money(metrics.medianPerAcre))}</div></div>
+</div>
+<table>
+<thead><tr><th>#</th><th>Comparable</th><th>Sale Date</th><th>Sale Price</th><th>Acres</th><th>Price/Acre</th><th>Qualified</th><th>Source</th></tr></thead>
+<tbody>${rows}</tbody>
+</table>
+</div>
+
+<div class="panel">
+<h2>Selection &amp; Limitations</h2>
+<div class="label">Selection Notes</div><div class="value note">${esc(report.selection_notes || "Not recorded")}</div>
+<div class="label" style="margin-top:18px">Limitations</div><div class="value note">${esc(report.limitations || "Not recorded")}</div>
+</div>
+`, `${version.title} v${version.version_number}`),
+    {headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store"}}
+  );
+}
+
+
+/* ============================================================
    PROPERTY RECORD
    ============================================================ */
 
@@ -4607,6 +5023,25 @@ request.method === "GET" &&
     ORDER BY i.created_at DESC, i.id DESC
   `).bind(propertyId).all();
 
+  const miniCompForLibrary = await ensureMiniCompForProperty(env, propertyId);
+  const libraryItems = await env.DB.prepare(`
+    SELECT *
+    FROM report_library_items
+    WHERE property_id = ?
+      AND archived = 0
+    ORDER BY updated_at DESC, id DESC
+  `).bind(propertyId).all();
+
+  const librarySummary = libraryItems.results.length
+    ? libraryItems.results.map(item => `
+      <div class="value">
+        <a href="/library/item/${item.id}">${esc(item.title)}</a>
+        — ${esc(item.current_status)}
+        — ${item.current_version ? `v${esc(item.current_version)} approved` : "no approved version"}
+      </div>
+    `).join("")
+    : '<div class="empty">No reports recorded yet.</div>';
+
   const researchOptions = [
     "Not Started",
     "Researching",
@@ -4649,6 +5084,15 @@ This is the durable FLTract property research record. Client-submitted intake in
 <div><div class="label">Research Status</div><div class="value">${esc(property.research_status || "Not Started")}</div></div>
 <div><div class="label">Last Updated</div><div class="value">${esc(floridaTime(property.updated_at))}</div></div>
 </div>
+</div>
+
+<div class="panel">
+<h2>Research &amp; Report Library</h2>
+<p class="section-note">
+Permanent private report history for this property. Working reports remain structured in FLTract; each human-approved version is preserved rather than overwritten. Nothing in the library is automatically emailed to the client.
+</p>
+${librarySummary}
+<div style="margin-top:14px"><a href="/property/${property.id}/library">Open Full Library →</a></div>
 </div>
 
 <div class="panel">
