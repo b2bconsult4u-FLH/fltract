@@ -5936,6 +5936,31 @@ request.method === "GET" &&
     ORDER BY i.created_at DESC, i.id DESC
   `).bind(propertyId).all();
 
+  const propertyAssignments = await assignmentScopeForProperty(env, propertyId);
+  const propertyAssignableStaff = await activeStaffUsers(env);
+
+  const propertyAssignmentRows = propertyAssignments.length
+    ? propertyAssignments.map(a => `
+      <tr>
+        <td><strong>${esc(a.display_name || a.email)}</strong><br><span class="small">${esc(a.email)}</span></td>
+        <td>${esc(a.role)}</td>
+        <td>${esc(a.assignment_role)}</td>
+        <td>${esc(floridaTime(a.assigned_at))}</td>
+        <td>
+          ${staff.authenticated && staffCan(staff.user, "manage_assignments") ? `
+          <form method="post" action="/property/${propertyId}/assignment/${a.assignment_id}/end">
+            <input name="reason" maxlength="500" placeholder="Reason for reassignment / unassignment" required>
+            <button type="submit">End Assignment</button>
+          </form>` : ""}
+        </td>
+      </tr>
+    `).join("")
+    : '<tr><td colspan="5" class="empty">No staff member is specifically assigned to this property.</td></tr>';
+
+  const propertyStaffOptions = propertyAssignableStaff.map(u =>
+    `<option value="${u.id}">${esc(u.display_name || u.email)} — ${esc(u.role)}</option>`
+  ).join("");
+
   const miniCompForLibrary = await ensureMiniCompForProperty(env, propertyId);
 
   const researchRuns = await env.DB.prepare(`
@@ -6021,6 +6046,34 @@ This is the durable FLTract property research record. Client-submitted intake in
 <div><div class="label">Research Status</div><div class="value">${esc(property.research_status || "Not Started")}</div></div>
 <div><div class="label">Last Updated</div><div class="value">${esc(floridaTime(property.updated_at))}</div></div>
 </div>
+</div>
+
+<div class="panel">
+<h2>Property Responsibility</h2>
+<p class="section-note">
+A property assignment is more specific than the client-level assignment and is useful when a researcher, manager, or specialist is responsible for this tract. Assignment history is retained when responsibility changes.
+</p>
+<table>
+<thead><tr><th>Staff</th><th>System Role</th><th>Assignment</th><th>Assigned</th><th></th></tr></thead>
+<tbody>${propertyAssignmentRows}</tbody>
+</table>
+
+${staff.authenticated && staffCan(staff.user, "manage_assignments") ? `
+<form method="post" action="/property/${propertyId}/assign" style="margin-top:16px">
+<div class="form-grid">
+<label><span>Assign Staff</span><select name="staff_user_id" required>
+<option value="">Choose staff member</option>
+${propertyStaffOptions}
+</select></label>
+<label><span>Responsibility</span><select name="assignment_role">
+<option>Primary</option>
+<option>Support</option>
+<option>Research</option>
+</select></label>
+</div>
+<div style="margin-top:14px"><button type="submit">Assign Property</button></div>
+</form>
+` : '<p class="section-note">Assignment changes require an authorized FLTract manager, CEO, or Administrator.</p>'}
 </div>
 
 <div class="panel">
