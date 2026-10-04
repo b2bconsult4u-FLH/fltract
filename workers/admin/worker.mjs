@@ -759,6 +759,52 @@ const COUNTY_RESEARCH_ADAPTERS = {
 };
 
 
+const ST_LUCIE_PARCEL_QUERY =
+  "https://map.paslc.gov/arcgis/rest/services/GISPublic/TaxMap/MapServer/9/query";
+
+function researchSql(value) {
+  return String(value || "").replace(/'/g, "''");
+}
+
+async function queryOfficialArcGIS(endpoint, params) {
+  const url = new URL(endpoint);
+  for (const [key,value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== "") {
+      url.searchParams.set(key, String(value));
+    }
+  }
+  url.searchParams.set("f","json");
+
+  const response = await fetch(url.toString(), {
+    headers:{"accept":"application/json"}
+  });
+
+  if (!response.ok) {
+    throw new Error(`Official county source HTTP ${response.status}`);
+  }
+
+  const data = await response.json();
+  if (data?.error) {
+    throw new Error(data.error.message || "Official county query failed");
+  }
+  return data;
+}
+
+function stLucieSubjectWhere(property) {
+  if (property.parcel_id) {
+    return `ParcelID='${researchSql(property.parcel_id)}'`;
+  }
+
+  const street = String(property.property_location || "")
+    .split(",")[0]
+    .trim()
+    .toUpperCase();
+
+  if (!street) return "";
+  return `UPPER(SiteAddress)='${researchSql(street)}'`;
+}
+
+
 /* ============================================================
    FLORIDA DATE / TIME
    ============================================================ */
