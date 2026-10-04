@@ -978,13 +978,13 @@ function staffCan(user, capability) {
 
   const matrix = {
     "Administrator": new Set([
-      "admin_access","manage_staff","view_clients","edit_clients",
+      "admin_access","manage_staff","manage_assignments","view_clients","edit_clients",
       "research_property","review_reports","approve_reports",
       "prepare_referrals","approve_referrals","manage_followups",
       "view_compliance","export_data","view_audit"
     ]),
     "CEO": new Set([
-      "admin_access","manage_staff","view_clients","edit_clients",
+      "admin_access","manage_staff","manage_assignments","view_clients","edit_clients",
       "research_property","review_reports","approve_reports",
       "prepare_referrals","approve_referrals","manage_followups",
       "view_compliance","export_data","view_audit"
@@ -996,7 +996,7 @@ function staffCan(user, capability) {
       "admin_access","view_clients"
     ]),
     "Manager": new Set([
-      "admin_access","view_clients","edit_clients","research_property",
+      "admin_access","manage_assignments","view_clients","edit_clients","research_property",
       "review_reports","prepare_referrals","manage_followups"
     ]),
     "Employee": new Set([
@@ -1006,6 +1006,121 @@ function staffCan(user, capability) {
 
   return Boolean(matrix[role]?.has(capability));
 }
+
+async function activeStaffUsers(env) {
+  const result = await env.DB.prepare(`
+    SELECT id, email, display_name, role
+    FROM staff_users
+    WHERE active = 1
+    ORDER BY display_name ASC, email ASC
+  `).all();
+  return result.results || [];
+}
+
+async function assignmentScopeForClient(env, clientId) {
+  const result = await env.DB.prepare(`
+    SELECT
+      ca.id AS assignment_id,
+      ca.assignment_role,
+      ca.assigned_at,
+      su.id AS staff_user_id,
+      su.email,
+      su.display_name,
+      su.role
+    FROM client_assignments ca
+    JOIN staff_users su ON su.id = ca.staff_user_id
+    WHERE ca.client_id = ?
+      AND ca.active = 1
+      AND su.active = 1
+    ORDER BY ca.assigned_at ASC, ca.id ASC
+  `).bind(clientId).all();
+  return result.results || [];
+}
+
+async function assignmentScopeForProperty(env, propertyId) {
+  const result = await env.DB.prepare(`
+    SELECT
+      pa.id AS assignment_id,
+      pa.assignment_role,
+      pa.assigned_at,
+      su.id AS staff_user_id,
+      su.email,
+      su.display_name,
+      su.role
+    FROM property_assignments pa
+    JOIN staff_users su ON su.id = pa.staff_user_id
+    WHERE pa.property_id = ?
+      AND pa.active = 1
+      AND su.active = 1
+    ORDER BY pa.assigned_at ASC, pa.id ASC
+  `).bind(propertyId).all();
+  return result.results || [];
+}
+
+async function staffHasClientScope(env, user, clientId) {
+  if (!user || !user.active) return false;
+  if (["Administrator","CEO"].includes(user.role)) return true;
+
+  const direct = await env.DB.prepare(`
+    SELECT 1 AS ok
+    FROM client_assignments
+    WHERE client_id = ? AND staff_user_id = ? AND active = 1
+    LIMIT 1
+  `).bind(clientId, user.id).first();
+
+  if (direct) return true;
+
+  const property = await env.DB.prepare(`
+    SELECT 1 AS ok
+    FROM property_assignments pa
+    JOIN properties p ON p.id = pa.property_id
+    WHERE p.client_id = ?
+      AND pa.staff_user_id = ?
+      AND pa.active = 1
+    LIMIT 1
+  `).bind(clientId, user.id).first();
+
+  if (property) return true;
+
+  if (user.role === "Manager") {
+    const team = await env.DB.prepare(`
+      SELECT 1 AS ok
+      FROM staff_teams t
+      JOIN staff_team_members tm ON tm.team_id = t.id AND tm.active = 1
+      JOIN client_assignments ca ON ca.staff_user_id = tm.staff_user_id AND ca.active = 1
+      WHERE t.manager_staff_user_id = ?
+        AND t.active = 1
+        AND ca.client_id = ?
+      LIMIT 1
+    `).bind(user.id, clientId).first();
+    if (team) return true;
+  }
+
+  return false;
+}
+
+async function staffHasPropertyScope(env, user, propertyId) {
+  if (!user || !user.active) return false;
+  if (["Administrator","CEO"].includes(user.role)) return true;
+
+  const direct = await env.DB.prepare(`
+    SELECT 1 AS ok
+    FROM property_assignments
+    WHERE property_id = ? AND staff_user_id = ? AND active = 1
+    LIMIT 1
+  `).bind(propertyId, user.id).first();
+
+  if (direct) return true;
+
+  const property = await env.DB.prepare(`
+    SELECT client_id FROM properties WHERE id = ? LIMIT 1
+  `).bind(propertyId).first();
+
+  return property
+    ? staffHasClientScope(env, user, property.client_id)
+    : false;
+}
+
 
 async function logStaffAccess(env, ctx, request, eventType, result, note = "") {
   try {
@@ -1862,6 +1977,15 @@ return new Response(
 {status:500}
 );
 }
+
+
+const staff = await staffContext(env, request);
+
+/*
+  Assignment scope is being populated and verified before global
+  record filtering is activated. This prevents an incomplete
+  assignment rollout from accidentally hiding existing records.
+*/
 
 
 /* ============================================================
