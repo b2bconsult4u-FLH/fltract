@@ -114,16 +114,6 @@
     payload.live_call_opt_in=fd.get("live_call_opt_in")==="yes";
     payload.company_website=fd.get("company_website")||"";
 
-    const supplemental=[];
-    if(payload.timeframe) supplemental.push("Timeframe: "+payload.timeframe);
-    if(payload.owner_status) supplemental.push("Owner status: "+payload.owner_status);
-    if(payload.best_contact_time) supplemental.push("Best contact time: "+payload.best_contact_time);
-    if(payload.referral_source) supplemental.push("Referral source: "+payload.referral_source);
-    if(payload.source_page) supplemental.push("Source page: "+payload.source_page);
-    if(supplemental.length){
-      payload.details=(payload.details?payload.details+"\n\n":"")+supplemental.join("\n");
-    }
-
     try{
       const response=await fetch("https://fltract-intake-5a25.b2bconsult4u.workers.dev/submit",{
         method:"POST",
