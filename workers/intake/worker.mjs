@@ -2670,6 +2670,140 @@ We appreciate your contacting FLTract and look forward to serving you.`;
 
     }
 
+    /* --------------------------------------------------------
+*       SEND INTERNAL NEW-INQUIRY NOTICE + LOG RESULT
+*
+*       This is separate from the customer acknowledgment.
+*       Notification failure must never cause the intake itself to fail.
+*       -------------------------------------------------------- */
+
+    let internalNotificationStatus = "not_attempted";
+    let internalEmailLogId = null;
+
+    try {
+
+      const internalSubject = `New FLTract Inquiry Received — #${inquiryId}`;
+
+      const internalLogResult = await env.DB.prepare(`
+        INSERT INTO email_log (
+          inquiry_id,
+          email_type,
+          recipient,
+          subject,
+          status
+        )
+        VALUES (
+          ?,
+          'Internal Intake Notification',
+          'fltractoffice@gmail.com',
+          ?,
+          'Prepared'
+        )
+      `)
+      .bind(
+        inquiryId,
+        internalSubject
+      )
+      .run();
+
+      internalEmailLogId =
+        Number(
+          internalLogResult
+            ?.meta
+            ?.last_row_id
+        ) || null;
+
+      const internalText =
+`A new FLTract property inquiry has been submitted.
+
+Inquiry ID: #${inquiryId}
+
+Review the inquiry in the FLTract Admin system.
+
+This is an internal operational notification. Do not reply to this message.`;
+
+      const internalHtml = `
+        <p>A new FLTract property inquiry has been submitted.</p>
+        <p><strong>Inquiry ID: #${inquiryId}</strong></p>
+        <p>Review the inquiry in the FLTract Admin system.</p>
+        <p><small>This is an internal operational notification. Do not reply to this message.</small></p>
+      `;
+
+      const internalSendResult = await env.SEND_EMAIL.send({
+        to: "fltractoffice@gmail.com",
+        from: "noreply@fltract.com",
+        subject: internalSubject,
+        text: internalText,
+        html: internalHtml
+      });
+
+      internalNotificationStatus = "sent";
+
+      if (internalEmailLogId) {
+
+        await env.DB.prepare(`
+          UPDATE email_log
+          SET
+            status = 'Sent',
+            provider_message_id = ?,
+            sent_at = CURRENT_TIMESTAMP,
+            failure_reason = NULL
+          WHERE id = ?
+        `)
+        .bind(
+          internalSendResult?.messageId ?? null,
+          internalEmailLogId
+        )
+        .run();
+
+      }
+
+    }
+    catch (error) {
+
+      internalNotificationStatus = "failed";
+
+      console.error(
+        "Internal intake notification email failed:",
+        error
+      );
+
+      try {
+
+        if (internalEmailLogId) {
+
+          await env.DB.prepare(`
+            UPDATE email_log
+            SET
+              status = 'Failed',
+              failure_reason = ?
+            WHERE id = ?
+          `)
+          .bind(
+            String(
+              error?.message ||
+              error ||
+              "Unknown email sending error"
+            ),
+            internalEmailLogId
+          )
+          .run();
+
+        }
+
+      }
+      catch (logError) {
+
+        console.error(
+          "Internal notification failure logging also failed:",
+          logError
+        );
+
+      }
+
+    }
+
+
 
 
     /* --------------------------------------------------------*
@@ -2703,6 +2837,12 @@ We appreciate your contacting FLTract and look forward to serving you.`;
         acknowledgment_email:
 
           acknowledgmentEmailStatus,
+
+
+
+        internal_notification_email:
+
+          internalNotificationStatus,
 
 
 
