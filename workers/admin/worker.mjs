@@ -366,6 +366,79 @@ async function ensureClientSchema(env) {
     env.DB.prepare(`
       CREATE INDEX IF NOT EXISTS idx_staff_access_log_user
       ON staff_access_log(staff_user_id, created_at)
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS client_assignments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_id INTEGER NOT NULL,
+        staff_user_id INTEGER NOT NULL,
+        assignment_role TEXT NOT NULL DEFAULT 'Primary',
+        active INTEGER NOT NULL DEFAULT 1,
+        assigned_by_email TEXT NOT NULL DEFAULT '',
+        assigned_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        ended_at TEXT,
+        end_reason TEXT NOT NULL DEFAULT ''
+      )
+    `),
+    env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_client_assignments_client
+      ON client_assignments(client_id, active)
+    `),
+    env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_client_assignments_staff
+      ON client_assignments(staff_user_id, active)
+    `),
+    env.DB.prepare(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_client_assignment_active_unique
+      ON client_assignments(client_id, staff_user_id)
+      WHERE active = 1
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS property_assignments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        property_id INTEGER NOT NULL,
+        staff_user_id INTEGER NOT NULL,
+        assignment_role TEXT NOT NULL DEFAULT 'Primary',
+        active INTEGER NOT NULL DEFAULT 1,
+        assigned_by_email TEXT NOT NULL DEFAULT '',
+        assigned_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        ended_at TEXT,
+        end_reason TEXT NOT NULL DEFAULT ''
+      )
+    `),
+    env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_property_assignments_property
+      ON property_assignments(property_id, active)
+    `),
+    env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_property_assignments_staff
+      ON property_assignments(staff_user_id, active)
+    `),
+    env.DB.prepare(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_property_assignment_active_unique
+      ON property_assignments(property_id, staff_user_id)
+      WHERE active = 1
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS staff_teams (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        manager_staff_user_id INTEGER,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS staff_team_members (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        team_id INTEGER NOT NULL,
+        staff_user_id INTEGER NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        joined_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        ended_at TEXT,
+        UNIQUE(team_id, staff_user_id)
+      )
     `)
   ]);
 
