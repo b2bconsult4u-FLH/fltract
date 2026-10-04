@@ -148,6 +148,66 @@ async function ensureClientSchema(env) {
     env.DB.prepare(`
       CREATE INDEX IF NOT EXISTS idx_property_inquiries_property
       ON property_inquiries(property_id)
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS mini_comp_reports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        property_id INTEGER NOT NULL UNIQUE,
+        status TEXT NOT NULL DEFAULT 'Needs Research',
+        executive_summary TEXT NOT NULL DEFAULT '',
+        selection_notes TEXT NOT NULL DEFAULT '',
+        limitations TEXT NOT NULL DEFAULT '',
+        insufficient_data_reason TEXT NOT NULL DEFAULT '',
+        prepared_at TEXT,
+        approved_at TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS mini_comp_comparables (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        report_id INTEGER NOT NULL,
+        property_location TEXT NOT NULL DEFAULT '',
+        county TEXT NOT NULL DEFAULT '',
+        parcel_id TEXT NOT NULL DEFAULT '',
+        sale_date TEXT NOT NULL DEFAULT '',
+        sale_price REAL,
+        acreage REAL,
+        qualified_sale TEXT NOT NULL DEFAULT 'Unknown',
+        improvements TEXT NOT NULL DEFAULT '',
+        distance_miles REAL,
+        source_name TEXT NOT NULL DEFAULT '',
+        source_reference TEXT NOT NULL DEFAULT '',
+        source_retrieved_at TEXT,
+        selection_reason TEXT NOT NULL DEFAULT '',
+        notes TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `),
+    env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_mini_comp_comparables_report
+      ON mini_comp_comparables(report_id)
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS mini_comp_queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        property_id INTEGER NOT NULL,
+        report_id INTEGER NOT NULL,
+        task_type TEXT NOT NULL DEFAULT 'Research Mini-Comp',
+        status TEXT NOT NULL DEFAULT 'Queued',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT NOT NULL DEFAULT '',
+        available_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `),
+    env.DB.prepare(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_mini_comp_queue_open
+      ON mini_comp_queue(property_id, task_type)
+      WHERE status IN ('Queued','Processing','Retry')
     `)
   ]);
 
@@ -316,6 +376,39 @@ async function linkInquiryToProperty(
   `)
   .bind(propertyId, inquiryId)
   .run();
+
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO mini_comp_reports (
+      property_id,
+      status
+    )
+    VALUES (?, 'Needs Research')
+  `)
+  .bind(propertyId)
+  .run();
+
+  const report = await env.DB.prepare(`
+    SELECT id
+    FROM mini_comp_reports
+    WHERE property_id = ?
+    LIMIT 1
+  `)
+  .bind(propertyId)
+  .first();
+
+  if (report?.id) {
+    await env.DB.prepare(`
+      INSERT OR IGNORE INTO mini_comp_queue (
+        property_id,
+        report_id,
+        task_type,
+        status
+      )
+      VALUES (?, ?, 'Research Mini-Comp', 'Queued')
+    `)
+    .bind(propertyId, report.id)
+    .run();
+  }
 
   return propertyId;
 }
