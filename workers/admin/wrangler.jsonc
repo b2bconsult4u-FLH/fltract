@@ -4,6 +4,9 @@
   "name": "fltractadmin-fb08",
   "main": "worker.mjs",
   "compatibility_date": "2026-09-27",
+  "triggers": {
+    "crons": ["0 13 * * *"]
+  },
   "d1_databases": [
     {
       "binding": "DB",
