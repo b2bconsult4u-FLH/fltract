@@ -61,6 +61,147 @@ William E. McMullen II.
 
 
 /* ============================================================*
+*   CLIENT ACCOUNT HELPERS
+*   ============================================================ */
+
+let clientSchemaReady = false;
+
+function normalizeClientEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function normalizeClientPhone(value) {
+  return String(value || "").replace(/\D/g, "");
+}
+
+async function ensureClientSchema(env) {
+  if (clientSchemaReady) return;
+
+  await env.DB.batch([
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS clients (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        first_name TEXT NOT NULL DEFAULT '',
+        last_name TEXT NOT NULL DEFAULT '',
+        email TEXT NOT NULL DEFAULT '',
+        normalized_email TEXT NOT NULL UNIQUE,
+        phone TEXT NOT NULL DEFAULT '',
+        normalized_phone TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS client_inquiries (
+        client_id INTEGER NOT NULL,
+        inquiry_id INTEGER NOT NULL UNIQUE,
+        linked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        link_basis TEXT NOT NULL DEFAULT 'Exact Email',
+        PRIMARY KEY (client_id, inquiry_id)
+      )
+    `),
+    env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_client_inquiries_client
+      ON client_inquiries(client_id)
+    `)
+  ]);
+
+  clientSchemaReady = true;
+}
+
+async function linkInquiryToClient(
+  env,
+  {
+    inquiryId,
+    firstName,
+    lastName,
+    email,
+    phone
+  }
+) {
+  await ensureClientSchema(env);
+
+  const normalizedEmail = normalizeClientEmail(email);
+  const normalizedPhone = normalizeClientPhone(phone);
+
+  if (!normalizedEmail) {
+    throw new Error("CLIENT_EMAIL_REQUIRED");
+  }
+
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO clients (
+      first_name,
+      last_name,
+      email,
+      normalized_email,
+      phone,
+      normalized_phone
+    )
+    VALUES (?, ?, ?, ?, ?, ?)
+  `)
+  .bind(
+    firstName,
+    lastName,
+    email,
+    normalizedEmail,
+    phone || "",
+    normalizedPhone
+  )
+  .run();
+
+  const client =
+    await env.DB.prepare(`
+      SELECT id
+      FROM clients
+      WHERE normalized_email = ?
+      LIMIT 1
+    `)
+    .bind(normalizedEmail)
+    .first();
+
+  if (!client?.id) {
+    throw new Error("CLIENT_LINK_FAILED");
+  }
+
+  await env.DB.prepare(`
+    UPDATE clients
+    SET
+      first_name = ?,
+      last_name = ?,
+      email = ?,
+      phone = CASE WHEN ? <> '' THEN ? ELSE phone END,
+      normalized_phone = CASE WHEN ? <> '' THEN ? ELSE normalized_phone END,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `)
+  .bind(
+    firstName,
+    lastName,
+    email,
+    phone || "",
+    phone || "",
+    normalizedPhone,
+    normalizedPhone,
+    client.id
+  )
+  .run();
+
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO client_inquiries (
+      client_id,
+      inquiry_id,
+      link_basis
+    )
+    VALUES (?, ?, 'Exact Email')
+  `)
+  .bind(client.id, inquiryId)
+  .run();
+
+  return Number(client.id);
+}
+
+
+/* ============================================================*
 
 *   RESPONSE HELPERS*
 
@@ -2030,6 +2171,38 @@ export default {
       );
 
 
+
+    }
+
+
+    /* --------------------------------------------------------*
+*       LINK CLIENT ACCOUNT
+*
+*       Exact normalized email is the automatic match key.
+*       Ambiguous/fuzzy matching is intentionally not used.
+*       A client-account failure does not discard a saved inquiry.
+*       -------------------------------------------------------- */
+
+    try {
+
+      await linkInquiryToClient(
+        env,
+        {
+          inquiryId,
+          firstName,
+          lastName,
+          email,
+          phone
+        }
+      );
+
+    }
+    catch (error) {
+
+      console.error(
+        "Client account link failed:",
+        error
+      );
 
     }
 
