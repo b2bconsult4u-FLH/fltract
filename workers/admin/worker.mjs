@@ -43,6 +43,35 @@ function detailField(details, label) {
 }
 
 
+function clientDetailsDisplay(details) {
+  const metadataPrefixes = [
+    "Timeframe:",
+    "Owner status:",
+    "Best contact time:",
+    "Referral source:",
+    "Source page:"
+  ];
+
+  return String(details || "")
+    .split(/\r?\n/)
+    .filter(row => {
+      const trimmed = row.trim().toLowerCase();
+      return !metadataPrefixes.some(prefix =>
+        trimmed.startsWith(prefix.toLowerCase())
+      );
+    })
+    .join("\n")
+    .trim();
+}
+
+
+function inquiryTypeDisplay(value) {
+  return value === "Selling Property I Own"
+    ? "Selling Property"
+    : String(value || "");
+}
+
+
 function redirect(location) {
   return new Response(null, {
     status: 303,
@@ -2987,7 +3016,7 @@ ${esc(inquiry.phone)}
 Inquiry Type
 </div>
 <div class="value">
-${esc(inquiry.inquiry_type)}
+${esc(inquiryTypeDisplay(inquiry.inquiry_type))}
 </div>
 </div>
 
@@ -3096,7 +3125,7 @@ Client Details
 </div>
 
 <div class="value note">
-${esc(inquiry.details)}
+${esc(clientDetailsDisplay(inquiry.details) || "No additional client details.")}
 </div>
 
 </div>
