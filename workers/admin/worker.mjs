@@ -4310,6 +4310,31 @@ LIMIT 100
 .bind(clientId)
 .all();
 
+const clientAssignments = await assignmentScopeForClient(env, clientId);
+const assignableStaff = await activeStaffUsers(env);
+
+const assignmentRows = clientAssignments.length
+? clientAssignments.map(a => `
+  <tr>
+    <td><strong>${esc(a.display_name || a.email)}</strong><br><span class="small">${esc(a.email)}</span></td>
+    <td>${esc(a.role)}</td>
+    <td>${esc(a.assignment_role)}</td>
+    <td>${esc(floridaTime(a.assigned_at))}</td>
+    <td>
+      ${staff.authenticated && staffCan(staff.user, "manage_assignments") ? `
+      <form method="post" action="/client/${clientId}/assignment/${a.assignment_id}/end">
+        <input name="reason" maxlength="500" placeholder="Reason for reassignment / unassignment" required>
+        <button type="submit">End Assignment</button>
+      </form>` : ""}
+    </td>
+  </tr>
+`).join("")
+: '<tr><td colspan="5" class="empty">No staff member is currently assigned to this client.</td></tr>';
+
+const staffOptions = assignableStaff.map(u =>
+  `<option value="${u.id}">${esc(u.display_name || u.email)} — ${esc(u.role)}</option>`
+).join("");
+
 const phoneStatus =
 latestInquiry
 ? phoneContactStatus(latestInquiry, warningDays)
@@ -4471,6 +4496,35 @@ This is the client's permanent FLTract account. It groups multiple property inqu
 
 </div>
 
+</div>
+
+<div class="panel">
+<h2>Staff Responsibility</h2>
+<p class="section-note">
+Client assignment controls who is responsible for this relationship. A property may also have its own more-specific assignment. Ending an assignment preserves the historical record; FLTract does not delete assignment history.
+</p>
+
+<table>
+<thead><tr><th>Staff</th><th>System Role</th><th>Assignment</th><th>Assigned</th><th></th></tr></thead>
+<tbody>${assignmentRows}</tbody>
+</table>
+
+${staff.authenticated && staffCan(staff.user, "manage_assignments") ? `
+<form method="post" action="/client/${clientId}/assign" style="margin-top:16px">
+<div class="form-grid">
+<label><span>Assign Staff</span><select name="staff_user_id" required>
+<option value="">Choose staff member</option>
+${staffOptions}
+</select></label>
+<label><span>Responsibility</span><select name="assignment_role">
+<option>Primary</option>
+<option>Support</option>
+<option>Research</option>
+</select></label>
+</div>
+<div style="margin-top:14px"><button type="submit">Assign Client</button></div>
+</form>
+` : '<p class="section-note">Assignment changes require an authorized FLTract manager, CEO, or Administrator.</p>'}
 </div>
 
 
