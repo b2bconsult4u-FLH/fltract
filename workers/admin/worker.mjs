@@ -2976,6 +2976,37 @@ request.method === "GET" &&
 url.pathname === "/clients"
 ) {
 
+/*
+  Backfill legacy inquiries in small batches.
+  This lets the new Client Account system adopt existing records
+  without a destructive migration or a long blocking database job.
+*/
+const unlinked =
+await env.DB.prepare(`
+SELECT i.*
+FROM inquiries i
+LEFT JOIN client_inquiries ci
+  ON ci.inquiry_id = i.id
+WHERE
+  ci.inquiry_id IS NULL
+  AND TRIM(COALESCE(i.email,'')) <> ''
+ORDER BY i.id ASC
+LIMIT 100
+`).all();
+
+for (const inquiry of unlinked.results) {
+  try {
+    await ensureClientForInquiry(env, inquiry);
+  }
+  catch (error) {
+    console.error(
+      "Legacy client backfill failed for inquiry",
+      inquiry.id,
+      error
+    );
+  }
+}
+
 const {results = []} =
 await env.DB.prepare(`
 SELECT
