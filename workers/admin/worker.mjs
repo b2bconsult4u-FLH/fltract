@@ -4051,6 +4051,139 @@ request.method === "POST" &&
 
 
 /* ============================================================
+   MY WORK — ASSIGNED RECORDS
+   ============================================================ */
+
+if (
+request.method === "GET" &&
+url.pathname === "/my-work"
+) {
+  if (!staff.authenticated || !staff.user?.active) {
+    return new Response(
+      "FLTract could not identify an active staff account for this Access identity.",
+      {status:403}
+    );
+  }
+
+  const assignedClients = await env.DB.prepare(`
+    SELECT
+      c.*,
+      ca.assignment_role,
+      ca.assigned_at
+    FROM client_assignments ca
+    JOIN clients c ON c.id = ca.client_id
+    WHERE ca.staff_user_id = ?
+      AND ca.active = 1
+    ORDER BY ca.assigned_at DESC
+  `).bind(staff.user.id).all();
+
+  const assignedProperties = await env.DB.prepare(`
+    SELECT
+      p.*,
+      pa.assignment_role,
+      pa.assigned_at,
+      c.first_name,
+      c.last_name
+    FROM property_assignments pa
+    JOIN properties p ON p.id = pa.property_id
+    JOIN clients c ON c.id = p.client_id
+    WHERE pa.staff_user_id = ?
+      AND pa.active = 1
+    ORDER BY pa.assigned_at DESC
+  `).bind(staff.user.id).all();
+
+  const managedTeams = await env.DB.prepare(`
+    SELECT
+      t.id,
+      t.name,
+      COUNT(CASE WHEN tm.active = 1 THEN 1 END) AS member_count
+    FROM staff_teams t
+    LEFT JOIN staff_team_members tm ON tm.team_id = t.id
+    WHERE t.manager_staff_user_id = ?
+      AND t.active = 1
+    GROUP BY t.id
+    ORDER BY t.name
+  `).bind(staff.user.id).all();
+
+  const clientRows = assignedClients.results.length
+    ? assignedClients.results.map(r => `
+      <tr>
+        <td><a href="/client/${r.id}"><strong>${esc(clientCode(r.id))}</strong></a></td>
+        <td>${esc(r.first_name)} ${esc(r.last_name)}</td>
+        <td>${esc(r.assignment_role)}</td>
+        <td>${esc(floridaTime(r.assigned_at))}</td>
+      </tr>
+    `).join("")
+    : '<tr><td colspan="4" class="empty">No client accounts are directly assigned to you.</td></tr>';
+
+  const propertyRows = assignedProperties.results.length
+    ? assignedProperties.results.map(r => `
+      <tr>
+        <td><a href="/property/${r.id}"><strong>${esc(propertyCode(r.id))}</strong></a></td>
+        <td>${esc(r.property_location || "Not recorded")}</td>
+        <td>${esc(r.first_name)} ${esc(r.last_name)}</td>
+        <td>${esc(r.assignment_role)}</td>
+        <td>${esc(floridaTime(r.assigned_at))}</td>
+      </tr>
+    `).join("")
+    : '<tr><td colspan="5" class="empty">No property records are directly assigned to you.</td></tr>';
+
+  const teamRows = managedTeams.results.length
+    ? managedTeams.results.map(t => `
+      <tr><td><strong>${esc(t.name)}</strong></td><td>${esc(t.member_count)}</td></tr>
+    `).join("")
+    : '<tr><td colspan="2" class="empty">You are not currently the manager of an active FLTract team.</td></tr>';
+
+  return new Response(
+    page(`
+<a class="back" href="/">← Back to Management Dashboard</a>
+
+<div class="panel">
+<h1>My Work</h1>
+<p class="section-note">
+This is the responsibility-based work queue for the signed-in FLTract staff identity. Direct client and property assignments appear here. Administrator and CEO business-wide visibility is separate from this personal responsibility list.
+</p>
+<div class="grid">
+<div><div class="label">Staff</div><div class="value">${esc(staff.user.display_name || staff.email)}</div></div>
+<div><div class="label">Role</div><div class="value"><strong>${esc(staff.user.role)}</strong></div></div>
+<div><div class="label">Assigned Clients</div><div class="value">${assignedClients.results.length}</div></div>
+<div><div class="label">Assigned Properties</div><div class="value">${assignedProperties.results.length}</div></div>
+</div>
+</div>
+
+<div class="panel">
+<h2>My Client Accounts</h2>
+<table>
+<thead><tr><th>Client ID</th><th>Client</th><th>Responsibility</th><th>Assigned</th></tr></thead>
+<tbody>${clientRows}</tbody>
+</table>
+</div>
+
+<div class="panel">
+<h2>My Property Records</h2>
+<table>
+<thead><tr><th>Property ID</th><th>Location</th><th>Client</th><th>Responsibility</th><th>Assigned</th></tr></thead>
+<tbody>${propertyRows}</tbody>
+</table>
+</div>
+
+<div class="panel">
+<h2>Teams I Manage</h2>
+<p class="section-note">
+Team membership is the manager supervision layer. It will be used when scoped record enforcement is activated after assignments are verified.
+</p>
+<table>
+<thead><tr><th>Team</th><th>Active Members</th></tr></thead>
+<tbody>${teamRows}</tbody>
+</table>
+</div>
+`, "FLTract My Work"),
+    {headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store"}}
+  );
+}
+
+
+/* ============================================================
    CLIENT ACCOUNT DIRECTORY
    ============================================================ */
 
@@ -8111,6 +8244,8 @@ ${showArchived
 <a class="back" href="/clients">
 Client Accounts
 </a>
+
+${staff.authenticated && staff.user?.active ? '<a class="back" href="/my-work">My Work</a>' : ""}
 
 <a class="back" href="${showArchived ? "/" : "/?archived=1"}">
 ${showArchived
