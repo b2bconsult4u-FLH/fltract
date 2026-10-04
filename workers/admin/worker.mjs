@@ -317,6 +317,25 @@ async function ensureClientSchema(env) {
     env.DB.prepare(`
       CREATE INDEX IF NOT EXISTS idx_report_versions_item
       ON report_library_versions(library_item_id, version_number)
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS official_research_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        property_id INTEGER NOT NULL,
+        county TEXT NOT NULL DEFAULT '',
+        adapter_key TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'Queued',
+        subject_matches INTEGER NOT NULL DEFAULT 0,
+        comparable_candidates INTEGER NOT NULL DEFAULT 0,
+        source_name TEXT NOT NULL DEFAULT '',
+        result_note TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        completed_at TEXT
+      )
+    `),
+    env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_official_research_runs_property
+      ON official_research_runs(property_id, created_at)
     `)
   ]);
 
