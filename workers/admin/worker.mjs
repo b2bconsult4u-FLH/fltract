@@ -215,6 +215,66 @@ async function ensureClientSchema(env) {
     env.DB.prepare(`
       CREATE INDEX IF NOT EXISTS idx_property_inquiries_property
       ON property_inquiries(property_id)
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS mini_comp_reports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        property_id INTEGER NOT NULL UNIQUE,
+        status TEXT NOT NULL DEFAULT 'Needs Research',
+        executive_summary TEXT NOT NULL DEFAULT '',
+        selection_notes TEXT NOT NULL DEFAULT '',
+        limitations TEXT NOT NULL DEFAULT '',
+        insufficient_data_reason TEXT NOT NULL DEFAULT '',
+        prepared_at TEXT,
+        approved_at TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS mini_comp_comparables (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        report_id INTEGER NOT NULL,
+        property_location TEXT NOT NULL DEFAULT '',
+        county TEXT NOT NULL DEFAULT '',
+        parcel_id TEXT NOT NULL DEFAULT '',
+        sale_date TEXT NOT NULL DEFAULT '',
+        sale_price REAL,
+        acreage REAL,
+        qualified_sale TEXT NOT NULL DEFAULT 'Unknown',
+        improvements TEXT NOT NULL DEFAULT '',
+        distance_miles REAL,
+        source_name TEXT NOT NULL DEFAULT '',
+        source_reference TEXT NOT NULL DEFAULT '',
+        source_retrieved_at TEXT,
+        selection_reason TEXT NOT NULL DEFAULT '',
+        notes TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `),
+    env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_mini_comp_comparables_report
+      ON mini_comp_comparables(report_id)
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS mini_comp_queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        property_id INTEGER NOT NULL,
+        report_id INTEGER NOT NULL,
+        task_type TEXT NOT NULL DEFAULT 'Research Mini-Comp',
+        status TEXT NOT NULL DEFAULT 'Queued',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT NOT NULL DEFAULT '',
+        available_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `),
+    env.DB.prepare(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_mini_comp_queue_open
+      ON mini_comp_queue(property_id, task_type)
+      WHERE status IN ('Queued','Processing','Retry')
     `)
   ]);
 
@@ -365,6 +425,8 @@ async function ensurePropertyForInquiry(env, inquiry, clientId = null) {
   .bind(propertyId, inquiry.id)
   .run();
 
+  await ensureMiniCompForProperty(env, propertyId);
+
   return await env.DB.prepare(`
     SELECT *
     FROM properties
@@ -373,6 +435,112 @@ async function ensurePropertyForInquiry(env, inquiry, clientId = null) {
   `)
   .bind(propertyId)
   .first();
+}
+
+
+async function ensureMiniCompForProperty(env, propertyId) {
+  await ensureClientSchema(env);
+
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO mini_comp_reports (
+      property_id,
+      status
+    )
+    VALUES (?, 'Needs Research')
+  `)
+  .bind(propertyId)
+  .run();
+
+  const report = await env.DB.prepare(`
+    SELECT *
+    FROM mini_comp_reports
+    WHERE property_id = ?
+    LIMIT 1
+  `)
+  .bind(propertyId)
+  .first();
+
+  if (!report) return null;
+
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO mini_comp_queue (
+      property_id,
+      report_id,
+      task_type,
+      status
+    )
+    VALUES (?, ?, 'Research Mini-Comp', 'Queued')
+  `)
+  .bind(propertyId, report.id)
+  .run();
+
+  return report;
+}
+
+function numberOrNull(value) {
+  const raw = String(value ?? "").replace(/[$,\s]/g, "");
+  if (!raw) return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+function money(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "Not recorded";
+  return new Intl.NumberFormat("en-US", {
+    style:"currency",
+    currency:"USD",
+    maximumFractionDigits:0
+  }).format(n);
+}
+
+function decimal(value, digits = 2) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "—";
+  return n.toLocaleString("en-US", {
+    maximumFractionDigits:digits
+  });
+}
+
+function median(values) {
+  const nums = values
+    .map(Number)
+    .filter(Number.isFinite)
+    .sort((a,b) => a-b);
+
+  if (!nums.length) return null;
+  const middle = Math.floor(nums.length / 2);
+  return nums.length % 2
+    ? nums[middle]
+    : (nums[middle - 1] + nums[middle]) / 2;
+}
+
+function miniCompMetrics(comps) {
+  const usable = comps.filter(c =>
+    Number.isFinite(Number(c.sale_price)) &&
+    Number(c.sale_price) > 0
+  );
+
+  const prices = usable.map(c => Number(c.sale_price));
+  const perAcre = usable
+    .filter(c => Number(c.acreage) > 0)
+    .map(c => Number(c.sale_price) / Number(c.acreage));
+
+  const average = values =>
+    values.length
+      ? values.reduce((a,b) => a + b, 0) / values.length
+      : null;
+
+  return {
+    total: comps.length,
+    usable: usable.length,
+    lowPrice: prices.length ? Math.min(...prices) : null,
+    highPrice: prices.length ? Math.max(...prices) : null,
+    averagePrice: average(prices),
+    medianPrice: median(prices),
+    averagePerAcre: average(perAcre),
+    medianPerAcre: median(perAcre)
+  };
 }
 
 
@@ -3691,6 +3859,450 @@ headers:{
 
 
 /* ============================================================
+   MINI-COMP REPORT ENGINE
+   ============================================================ */
+
+if (
+request.method === "POST" &&
+/^\/property\/\d+\/mini-comp\/comparable$/.test(url.pathname)
+) {
+  if (!sameOriginPost(request)) {
+    return new Response("Invalid request origin.", {status:403});
+  }
+
+  const propertyId = Number(url.pathname.split("/").filter(Boolean)[1]);
+  const property = await env.DB.prepare(`
+    SELECT * FROM properties WHERE id = ? LIMIT 1
+  `).bind(propertyId).first();
+
+  if (!property) return new Response("Property record not found.", {status:404});
+
+  const report = await ensureMiniCompForProperty(env, propertyId);
+  const form = await request.formData();
+  const field = (name, max = 4000) =>
+    String(form.get(name) || "").trim().slice(0, max);
+
+  const qualifiedSale = field("qualified_sale", 50);
+  if (!["Yes","No","Unknown"].includes(qualifiedSale)) {
+    return new Response("Invalid qualified-sale value.", {status:400});
+  }
+
+  const sourceName = field("source_name", 500);
+  const sourceReference = field("source_reference", 2000);
+  if (!sourceName || !sourceReference) {
+    return new Response("Source name and source reference are required.", {status:400});
+  }
+
+  await env.DB.prepare(`
+    INSERT INTO mini_comp_comparables (
+      report_id,
+      property_location,
+      county,
+      parcel_id,
+      sale_date,
+      sale_price,
+      acreage,
+      qualified_sale,
+      improvements,
+      distance_miles,
+      source_name,
+      source_reference,
+      source_retrieved_at,
+      selection_reason,
+      notes
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
+  `).bind(
+    report.id,
+    field("property_location", 1000),
+    field("county", 200),
+    field("parcel_id", 300),
+    field("sale_date", 50),
+    numberOrNull(form.get("sale_price")),
+    numberOrNull(form.get("acreage")),
+    qualifiedSale,
+    field("improvements", 1000),
+    numberOrNull(form.get("distance_miles")),
+    sourceName,
+    sourceReference,
+    field("selection_reason", 2000),
+    field("notes", 4000)
+  ).run();
+
+  await env.DB.prepare(`
+    UPDATE mini_comp_reports
+    SET status = CASE
+      WHEN status = 'Approved' THEN 'Ready for Review'
+      ELSE 'Draft'
+    END,
+    approved_at = NULL,
+    updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).bind(report.id).run();
+
+  if (property.primary_inquiry_id) {
+    await env.DB.prepare(`
+      INSERT INTO activity_log (inquiry_id, activity_type, activity_note)
+      VALUES (?, 'Mini-Comp Comparable Added', ?)
+    `).bind(
+      property.primary_inquiry_id,
+      `Comparable added to ${propertyCode(propertyId)} mini-comp from ${sourceName}.`
+    ).run();
+  }
+
+  return redirect(`/property/${propertyId}/mini-comp`);
+}
+
+
+if (
+request.method === "POST" &&
+/^\/property\/\d+\/mini-comp\/comparable\/\d+\/delete$/.test(url.pathname)
+) {
+  if (!sameOriginPost(request)) {
+    return new Response("Invalid request origin.", {status:403});
+  }
+
+  const parts = url.pathname.split("/").filter(Boolean);
+  const propertyId = Number(parts[1]);
+  const compId = Number(parts[4]);
+  const report = await ensureMiniCompForProperty(env, propertyId);
+
+  await env.DB.prepare(`
+    DELETE FROM mini_comp_comparables
+    WHERE id = ? AND report_id = ?
+  `).bind(compId, report.id).run();
+
+  await env.DB.prepare(`
+    UPDATE mini_comp_reports
+    SET status = 'Draft', approved_at = NULL, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).bind(report.id).run();
+
+  return redirect(`/property/${propertyId}/mini-comp`);
+}
+
+
+if (
+request.method === "POST" &&
+/^\/property\/\d+\/mini-comp\/save$/.test(url.pathname)
+) {
+  if (!sameOriginPost(request)) {
+    return new Response("Invalid request origin.", {status:403});
+  }
+
+  const propertyId = Number(url.pathname.split("/").filter(Boolean)[1]);
+  const report = await ensureMiniCompForProperty(env, propertyId);
+  const form = await request.formData();
+  const field = (name, max = 8000) =>
+    String(form.get(name) || "").trim().slice(0, max);
+
+  const status = field("status", 100);
+  if (!["Needs Research","Draft","Ready for Review","Insufficient Data"].includes(status)) {
+    return new Response("Invalid mini-comp status.", {status:400});
+  }
+
+  const insufficientReason = field("insufficient_data_reason", 4000);
+  if (status === "Insufficient Data" && !insufficientReason) {
+    return new Response("Explain why the data is insufficient.", {status:400});
+  }
+
+  await env.DB.prepare(`
+    UPDATE mini_comp_reports
+    SET
+      status = ?,
+      executive_summary = ?,
+      selection_notes = ?,
+      limitations = ?,
+      insufficient_data_reason = ?,
+      prepared_at = CASE
+        WHEN ? IN ('Ready for Review','Insufficient Data')
+        THEN CURRENT_TIMESTAMP
+        ELSE prepared_at
+      END,
+      approved_at = NULL,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).bind(
+    status,
+    field("executive_summary"),
+    field("selection_notes"),
+    field("limitations"),
+    insufficientReason,
+    status,
+    report.id
+  ).run();
+
+  await env.DB.prepare(`
+    UPDATE mini_comp_queue
+    SET
+      status = CASE
+        WHEN ? IN ('Ready for Review','Insufficient Data') THEN 'Completed'
+        ELSE status
+      END,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE report_id = ?
+      AND status IN ('Queued','Processing','Retry')
+  `).bind(status, report.id).run();
+
+  return redirect(`/property/${propertyId}/mini-comp`);
+}
+
+
+if (
+request.method === "POST" &&
+/^\/property\/\d+\/mini-comp\/approve$/.test(url.pathname)
+) {
+  if (!sameOriginPost(request)) {
+    return new Response("Invalid request origin.", {status:403});
+  }
+
+  const propertyId = Number(url.pathname.split("/").filter(Boolean)[1]);
+  const property = await env.DB.prepare(`
+    SELECT * FROM properties WHERE id = ? LIMIT 1
+  `).bind(propertyId).first();
+
+  if (!property) return new Response("Property record not found.", {status:404});
+
+  const report = await ensureMiniCompForProperty(env, propertyId);
+  const comps = await env.DB.prepare(`
+    SELECT * FROM mini_comp_comparables
+    WHERE report_id = ?
+    ORDER BY sale_date DESC, id DESC
+  `).bind(report.id).all();
+
+  const qualified = comps.results.filter(c =>
+    c.qualified_sale === "Yes" &&
+    Number(c.sale_price) > 0 &&
+    Number(c.acreage) > 0 &&
+    c.source_name &&
+    c.source_reference
+  );
+
+  if (qualified.length < 3) {
+    return new Response(
+      "Approval requires at least three qualified comparable sales with price, acreage, and source evidence.",
+      {status:400}
+    );
+  }
+
+  if (!property.parcel_id || !property.data_source || !property.data_verified_at) {
+    return new Response(
+      "Approval requires a verified subject parcel ID and published-data source in the Property Research Workspace.",
+      {status:400}
+    );
+  }
+
+  await env.DB.prepare(`
+    UPDATE mini_comp_reports
+    SET
+      status = 'Approved',
+      approved_at = CURRENT_TIMESTAMP,
+      prepared_at = COALESCE(prepared_at, CURRENT_TIMESTAMP),
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).bind(report.id).run();
+
+  if (property.primary_inquiry_id) {
+    await env.DB.prepare(`
+      INSERT INTO activity_log (inquiry_id, activity_type, activity_note)
+      VALUES (?, 'Mini-Comp Approved', ?)
+    `).bind(
+      property.primary_inquiry_id,
+      `Mini-comp for ${propertyCode(propertyId)} approved after human review. No client communication was sent.`
+    ).run();
+  }
+
+  return redirect(`/property/${propertyId}/mini-comp`);
+}
+
+
+if (
+request.method === "GET" &&
+/^\/property\/\d+\/mini-comp$/.test(url.pathname)
+) {
+  const propertyId = Number(url.pathname.split("/").filter(Boolean)[1]);
+
+  const property = await env.DB.prepare(`
+    SELECT p.*, c.first_name, c.last_name
+    FROM properties p
+    JOIN clients c ON c.id = p.client_id
+    WHERE p.id = ?
+    LIMIT 1
+  `).bind(propertyId).first();
+
+  if (!property) return new Response("Property record not found.", {status:404});
+
+  const report = await ensureMiniCompForProperty(env, propertyId);
+  const comps = await env.DB.prepare(`
+    SELECT * FROM mini_comp_comparables
+    WHERE report_id = ?
+    ORDER BY sale_date DESC, id DESC
+  `).bind(report.id).all();
+
+  const metrics = miniCompMetrics(comps.results);
+  const qualifiedCount = comps.results.filter(c => c.qualified_sale === "Yes").length;
+
+  const compRows = comps.results.length
+    ? comps.results.map(comp => {
+        const ppa = Number(comp.sale_price) > 0 && Number(comp.acreage) > 0
+          ? Number(comp.sale_price) / Number(comp.acreage)
+          : null;
+        return `
+<tr>
+<td>${esc(comp.property_location || "Not recorded")}</td>
+<td>${esc(comp.sale_date || "")}</td>
+<td>${esc(money(comp.sale_price))}</td>
+<td>${esc(decimal(comp.acreage))}</td>
+<td>${esc(money(ppa))}</td>
+<td>${esc(comp.qualified_sale)}</td>
+<td>
+<strong>${esc(comp.source_name)}</strong><br>
+<span class="small">${esc(comp.source_reference)}</span><br>
+<span class="small">Retrieved: ${esc(floridaTime(comp.source_retrieved_at))}</span>
+</td>
+<td>${esc(comp.selection_reason || "")}</td>
+<td>
+<form method="post" action="/property/${propertyId}/mini-comp/comparable/${comp.id}/delete" onsubmit="return confirm('Remove this comparable from the mini-comp?');">
+<button type="submit" class="secondary">Remove</button>
+</form>
+</td>
+</tr>`;
+      }).join("")
+    : '<tr><td colspan="9" class="empty">No comparable sales recorded yet.</td></tr>';
+
+  const statusOptions = [
+    "Needs Research",
+    "Draft",
+    "Ready for Review",
+    "Insufficient Data"
+  ].map(s => `<option value="${esc(s)}" ${report.status === s ? "selected" : ""}>${esc(s)}</option>`).join("");
+
+  const approvalReady =
+    qualifiedCount >= 3 &&
+    property.parcel_id &&
+    property.data_source &&
+    property.data_verified_at;
+
+  return new Response(
+    page(`
+
+<a class="back" href="/property/${propertyId}">
+← Back to Property ${esc(propertyCode(propertyId))}
+</a>
+
+<div class="panel">
+<h1>Mini-Comp — ${esc(propertyCode(propertyId))}</h1>
+
+<p class="section-note">
+This private report workspace compares the subject property with documented public-record sales. FLTract retains the source trail and retrieval date for each comparable. The report stays inside the private account until it has been reviewed; nothing on this page is automatically emailed to a client.
+</p>
+
+<div class="grid">
+<div><div class="label">Client</div><div class="value">${esc(property.first_name)} ${esc(property.last_name)}</div></div>
+<div><div class="label">Report Status</div><div class="value"><span class="badge ${report.status === "Approved" ? "good" : report.status === "Insufficient Data" ? "danger" : "warning"}">${esc(report.status)}</span></div></div>
+<div><div class="label">Subject</div><div class="value">${esc(property.property_location || "Not recorded")}</div></div>
+<div><div class="label">Parcel ID</div><div class="value">${esc(property.parcel_id || "Not researched")}</div></div>
+<div><div class="label">Published Source</div><div class="value">${esc(property.data_source || "Not verified")}</div></div>
+<div><div class="label">Verified</div><div class="value">${esc(property.data_verified_at ? floridaTime(property.data_verified_at) : "Not verified")}</div></div>
+</div>
+</div>
+
+<div class="panel">
+<h2>Comparable Summary</h2>
+<p class="section-note">
+These figures are descriptive calculations from the recorded comparable sales. They are not an appraisal and are not, by themselves, a valuation conclusion.
+</p>
+<div class="summary-grid">
+<div class="summary-card"><div class="label">Comparables</div><div class="summary-number">${metrics.total}</div><div class="small">${qualifiedCount} marked qualified</div></div>
+<div class="summary-card"><div class="label">Median Sale Price</div><div class="summary-number">${esc(money(metrics.medianPrice))}</div><div class="small">Low ${esc(money(metrics.lowPrice))} · High ${esc(money(metrics.highPrice))}</div></div>
+<div class="summary-card"><div class="label">Median Price / Acre</div><div class="summary-number">${esc(money(metrics.medianPerAcre))}</div><div class="small">Average ${esc(money(metrics.averagePerAcre))}</div></div>
+</div>
+</div>
+
+<div class="panel">
+<h2>Comparable Sales</h2>
+<p class="section-note">
+Use public or otherwise authorized source data. Record the source reference and why the sale is comparable. Mark a sale Qualified only after its transaction and property characteristics have been checked. The working target is 10 researched candidates, with the strongest 3–5 selected for the final mini-comp.
+</p>
+<table>
+<thead>
+<tr>
+<th>Property</th><th>Sale Date</th><th>Sale Price</th><th>Acres</th><th>Price/Acre</th><th>Qualified</th><th>Source Evidence</th><th>Selection Reason</th><th></th>
+</tr>
+</thead>
+<tbody>${compRows}</tbody>
+</table>
+</div>
+
+<div class="panel">
+<h2>Add Comparable Sale</h2>
+<p class="section-note">
+Capture the evidence as you research it. County Property Appraiser, Clerk/deed records, GIS, and other authorized public records should remain attributable. Nearby properties are not automatically comparable; access, road type, HOA, improvements, zoning, land use, and market pocket can materially affect selection.
+</p>
+<form method="post" action="/property/${propertyId}/mini-comp/comparable">
+<div class="form-grid">
+<label><span>Property Location *</span><input name="property_location" maxlength="1000" required></label>
+<label><span>County</span><input name="county" maxlength="200" value="${esc(property.county)}"></label>
+<label><span>Parcel ID / Account</span><input name="parcel_id" maxlength="300"></label>
+<label><span>Sale Date</span><input type="date" name="sale_date"></label>
+<label><span>Sale Price</span><input name="sale_price" inputmode="decimal" placeholder="425000"></label>
+<label><span>Acreage</span><input name="acreage" inputmode="decimal" placeholder="10"></label>
+<label><span>Qualified Sale *</span><select name="qualified_sale" required><option>Unknown</option><option>Yes</option><option>No</option></select></label>
+<label><span>Distance from Subject (miles)</span><input name="distance_miles" inputmode="decimal"></label>
+<label class="full"><span>Improvements / Characteristics</span><textarea name="improvements" rows="3" maxlength="1000"></textarea></label>
+<label><span>Source Name *</span><input name="source_name" maxlength="500" required placeholder="County Property Appraiser / Clerk"></label>
+<label><span>Source Reference *</span><input name="source_reference" maxlength="2000" required placeholder="Record URL, instrument number, parcel record, or citation"></label>
+<label class="full"><span>Why This Sale Is Comparable</span><textarea name="selection_reason" rows="3" maxlength="2000"></textarea></label>
+<label class="full"><span>Research Notes</span><textarea name="notes" rows="3" maxlength="4000"></textarea></label>
+</div>
+<div style="margin-top:14px"><button type="submit">Add Comparable</button></div>
+</form>
+</div>
+
+<div class="panel">
+<h2>Report Draft &amp; Review</h2>
+<p class="section-note">
+AI or staff may prepare the research and draft language, but the report remains private and unapproved until human review. Use Insufficient Data when the evidence does not support a useful comparison rather than forcing a result.
+</p>
+<form method="post" action="/property/${propertyId}/mini-comp/save">
+<div class="form-grid">
+<label><span>Status</span><select name="status" required>${statusOptions}</select></label>
+<label class="full"><span>Executive Summary</span><textarea name="executive_summary" rows="5" maxlength="8000">${esc(report.executive_summary)}</textarea></label>
+<label class="full"><span>Comparable Selection Notes</span><textarea name="selection_notes" rows="5" maxlength="8000">${esc(report.selection_notes)}</textarea></label>
+<label class="full"><span>Limitations / Important Differences</span><textarea name="limitations" rows="5" maxlength="8000">${esc(report.limitations)}</textarea></label>
+<label class="full"><span>Insufficient Data Reason</span><textarea name="insufficient_data_reason" rows="4" maxlength="4000">${esc(report.insufficient_data_reason)}</textarea></label>
+</div>
+<div style="margin-top:14px"><button type="submit">Save Mini-Comp Draft</button></div>
+</form>
+</div>
+
+<div class="panel ${approvalReady ? "followup-future" : "followup-today"}">
+<h2>Human Approval</h2>
+<p class="section-note">
+Approval requires a verified subject parcel/source and at least three comparable sales marked Qualified with sale price, acreage, and source evidence. Approval records the decision in Activity History. It does not send or publish the report.
+</p>
+<div class="value">
+${approvalReady
+  ? "Minimum approval checks are satisfied."
+  : "Not ready: complete subject verification and at least three qualified comparable sales."}
+</div>
+<form method="post" action="/property/${propertyId}/mini-comp/approve" style="margin-top:14px">
+<button type="submit" ${approvalReady ? "" : "disabled"}>Approve Mini-Comp</button>
+</form>
+</div>
+
+`),
+    {
+      headers:{
+        "content-type":"text/html; charset=utf-8",
+        "cache-control":"no-store"
+      }
+    }
+  );
+}
+
+
+/* ============================================================
    PROPERTY RECORD
    ============================================================ */
 
@@ -3868,6 +4480,14 @@ This is the durable FLTract property research record. Client-submitted intake in
 <div><div class="label">Research Status</div><div class="value">${esc(property.research_status || "Not Started")}</div></div>
 <div><div class="label">Last Updated</div><div class="value">${esc(floridaTime(property.updated_at))}</div></div>
 </div>
+</div>
+
+<div class="panel">
+<h2>Mini-Comp Report</h2>
+<p class="section-note">
+FLTract's Mini-Comp keeps comparable-sale research, source evidence, calculations, limitations, and human approval with this property. The report is private by default and is never automatically emailed to the client.
+</p>
+<a class="back" href="/property/${property.id}/mini-comp">Open Mini-Comp Workspace →</a>
 </div>
 
 <div class="panel">
