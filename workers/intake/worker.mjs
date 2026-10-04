@@ -490,7 +490,7 @@ export default {
 
   async fetch(request, env) {
     const origin = request.headers.get("Origin");
-    const allowedOrigins = new Set(["https://fltract.com", "https://www.fltract.com"]);
+    const allowedOrigins = new Set(["https://fltract.com", "https://www.fltract.com", "https://fltract.b2bconsult4u.workers.dev"]);
     if (origin && !allowedOrigins.has(origin)) {
       return json({ok: false, error: "Origin not allowed."}, 403);
     }
