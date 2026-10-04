@@ -4118,6 +4118,167 @@ request.method === "POST" &&
 
 if (
 request.method === "GET" &&
+/^\/property\/\d+\/mini-comp\/report$/.test(url.pathname)
+) {
+  const propertyId = Number(url.pathname.split("/").filter(Boolean)[1]);
+
+  const property = await env.DB.prepare(`
+    SELECT p.*, c.first_name, c.last_name
+    FROM properties p
+    JOIN clients c ON c.id = p.client_id
+    WHERE p.id = ?
+    LIMIT 1
+  `).bind(propertyId).first();
+
+  if (!property) return new Response("Property record not found.", {status:404});
+
+  const report = await ensureMiniCompForProperty(env, propertyId);
+  const comps = await env.DB.prepare(`
+    SELECT * FROM mini_comp_comparables
+    WHERE report_id = ?
+    ORDER BY
+      CASE qualified_sale WHEN 'Yes' THEN 0 WHEN 'Unknown' THEN 1 ELSE 2 END,
+      sale_date DESC,
+      id DESC
+  `).bind(report.id).all();
+
+  const metrics = miniCompMetrics(comps.results);
+  const isApproved = report.status === "Approved";
+
+  const rows = comps.results.length
+    ? comps.results.map((comp, index) => {
+        const ppa = Number(comp.sale_price) > 0 && Number(comp.acreage) > 0
+          ? Number(comp.sale_price) / Number(comp.acreage)
+          : null;
+        return `
+<tr>
+<td>${index + 1}</td>
+<td>${esc(comp.property_location || "Not recorded")}<br><span class="small">${esc(comp.parcel_id || "")}</span></td>
+<td>${esc(comp.sale_date || "")}</td>
+<td>${esc(money(comp.sale_price))}</td>
+<td>${esc(decimal(comp.acreage))}</td>
+<td>${esc(money(ppa))}</td>
+<td>${esc(comp.qualified_sale)}</td>
+<td>${esc(comp.selection_reason || "")}</td>
+</tr>`;
+      }).join("")
+    : '<tr><td colspan="8" class="empty">No comparable sales recorded.</td></tr>';
+
+  const sources = comps.results.length
+    ? comps.results.map((comp, index) => `
+<div class="panel">
+<div class="label">Comparable ${index + 1} Source</div>
+<div class="value"><strong>${esc(comp.source_name || "Not recorded")}</strong></div>
+<div class="value note">${esc(comp.source_reference || "")}</div>
+<div class="small">Retrieved: ${esc(floridaTime(comp.source_retrieved_at))}</div>
+</div>`).join("")
+    : '<div class="empty">No source evidence recorded.</div>';
+
+  const reportTitle = `FLTract Mini-Comp — ${propertyCode(propertyId)}`;
+
+  return new Response(
+    page(`
+
+<style>
+@media print{
+  header, .no-print{display:none !important;}
+  body{background:#fff;}
+  main{padding:0;}
+  .wrap{width:100%;}
+  .panel{box-shadow:none;break-inside:avoid;}
+  a{color:inherit;text-decoration:none;}
+}
+</style>
+
+<div class="no-print">
+<a class="back" href="/property/${propertyId}/mini-comp">← Back to Mini-Comp Workspace</a>
+<button type="button" onclick="window.print()">Print / Save as PDF</button>
+</div>
+
+<div class="panel">
+<h1>${esc(reportTitle)}</h1>
+<div class="grid">
+<div><div class="label">Report Status</div><div class="value"><span class="badge ${isApproved ? "good" : "warning"}">${esc(report.status)}</span></div></div>
+<div><div class="label">Property ID</div><div class="value">${esc(propertyCode(property.id))}</div></div>
+<div><div class="label">Client</div><div class="value">${esc(property.first_name)} ${esc(property.last_name)}</div></div>
+<div><div class="label">Prepared</div><div class="value">${esc(report.prepared_at ? floridaTime(report.prepared_at) : "Draft")}</div></div>
+<div><div class="label">Approved</div><div class="value">${esc(report.approved_at ? floridaTime(report.approved_at) : "Not approved")}</div></div>
+<div><div class="label">Subject Parcel</div><div class="value">${esc(property.parcel_id || "Not recorded")}</div></div>
+</div>
+${!isApproved ? '<p class="section-note"><strong>DRAFT — INTERNAL REVIEW ONLY.</strong> This report has not been approved for client sharing.</p>' : ""}
+</div>
+
+<div class="panel">
+<h2>Subject Property</h2>
+<div class="grid">
+<div><div class="label">Location</div><div class="value">${esc(property.property_location || "Not recorded")}</div></div>
+<div><div class="label">County</div><div class="value">${esc(property.county || "")}</div></div>
+<div><div class="label">Property Type</div><div class="value">${esc(property.property_type || "")}</div></div>
+<div><div class="label">Acreage</div><div class="value">${esc(property.acreage || "")}</div></div>
+<div><div class="label">Owner</div><div class="value">${esc(property.owner_name || "Not recorded")}</div></div>
+<div><div class="label">Published Source</div><div class="value">${esc(property.data_source || "Not recorded")}</div></div>
+<div><div class="label">Market / Just Value</div><div class="value">${esc(property.market_value || "Not recorded")}</div></div>
+<div><div class="label">Assessed Value</div><div class="value">${esc(property.assessed_value || "Not recorded")}</div></div>
+<div><div class="label">Zoning</div><div class="value">${esc(property.zoning || "Not recorded")}</div></div>
+<div><div class="label">Land Use</div><div class="value">${esc(property.land_use || "Not recorded")}</div></div>
+</div>
+<div style="margin-top:18px"><div class="label">Legal Description</div><div class="value note">${esc(property.legal_description || "Not recorded")}</div></div>
+</div>
+
+<div class="panel">
+<h2>Executive Summary</h2>
+<div class="value note">${esc(report.executive_summary || "No executive summary has been prepared.")}</div>
+</div>
+
+<div class="panel">
+<h2>Comparable Sale Summary</h2>
+<div class="summary-grid">
+<div class="summary-card"><div class="label">Sales Reviewed</div><div class="summary-number">${metrics.total}</div></div>
+<div class="summary-card"><div class="label">Median Sale Price</div><div class="summary-number">${esc(money(metrics.medianPrice))}</div></div>
+<div class="summary-card"><div class="label">Median Price / Acre</div><div class="summary-number">${esc(money(metrics.medianPerAcre))}</div></div>
+</div>
+<table>
+<thead><tr><th>#</th><th>Comparable</th><th>Sale Date</th><th>Sale Price</th><th>Acres</th><th>Price/Acre</th><th>Qualified</th><th>Selection Reason</th></tr></thead>
+<tbody>${rows}</tbody>
+</table>
+</div>
+
+<div class="panel">
+<h2>Selection &amp; Limitations</h2>
+<div class="label">Comparable Selection Notes</div>
+<div class="value note">${esc(report.selection_notes || "Not recorded")}</div>
+<div class="label" style="margin-top:18px">Limitations / Important Differences</div>
+<div class="value note">${esc(report.limitations || "Not recorded")}</div>
+${report.insufficient_data_reason ? `
+<div class="label" style="margin-top:18px">Insufficient Data</div>
+<div class="value note">${esc(report.insufficient_data_reason)}</div>` : ""}
+</div>
+
+<details class="history-collapse" open>
+<summary>Source Evidence</summary>
+<div class="history-collapse-body">${sources}</div>
+</details>
+
+<div class="panel">
+<h2>Important Notice</h2>
+<p class="section-note">
+This FLTract Mini-Comp is an informational comparison of documented property and sale data. It is not an appraisal, survey, title opinion, environmental report, or guarantee of market value. Public-record information may change and should be independently verified for a transaction. Material differences in access, road type, HOA restrictions, improvements, zoning, land use, utilities, location, and market pocket can affect comparability.
+</p>
+</div>
+
+`, reportTitle),
+    {
+      headers:{
+        "content-type":"text/html; charset=utf-8",
+        "cache-control":"no-store"
+      }
+    }
+  );
+}
+
+
+if (
+request.method === "GET" &&
 /^\/property\/\d+\/mini-comp$/.test(url.pathname)
 ) {
   const propertyId = Number(url.pathname.split("/").filter(Boolean)[1]);
@@ -4274,6 +4435,14 @@ AI or staff may prepare the research and draft language, but the report remains 
 </div>
 <div style="margin-top:14px"><button type="submit">Save Mini-Comp Draft</button></div>
 </form>
+</div>
+
+<div class="panel">
+<h2>Report Preview</h2>
+<p class="section-note">
+Preview the assembled report at any time. Drafts are clearly marked INTERNAL REVIEW ONLY. After approval, the same private report can be printed or saved as PDF for deliberate client sharing; FLTract does not send it automatically.
+</p>
+<a class="back" href="/property/${propertyId}/mini-comp/report">Open Report Preview →</a>
 </div>
 
 <div class="panel ${approvalReady ? "followup-future" : "followup-today"}">
