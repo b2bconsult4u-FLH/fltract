@@ -3445,7 +3445,7 @@ if(request.method==="GET" && url.pathname==="/work-routing"){
 
 if(request.method==="POST" && url.pathname==="/work-routing/check-deadlines"){
   if(!sameOriginPost(request)) return new Response("Invalid request origin.",{status:403});
-  if(!trainingManagerAuthorized(staff)) return new Response("Manager authorization required.",{status:403});
+  if(!trainingManagerAuthorized(staff)) return await denyAndAudit(env,staff,request,"Check Work Deadlines");
   await checkWorkDeadlines(env,staff.email||"Authorized Manager");
   return redirect("/work-routing");
 }
