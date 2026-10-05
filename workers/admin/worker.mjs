@@ -2259,6 +2259,44 @@ async function executeDryRun(env, workflowId, subjectType, subjectId, initiatedB
     JSON.stringify({subject_type:subjectType, subject_id:subjectId}), JSON.stringify(effects)).run();
 }
 
+async function dryRunPage(env) {
+  await ensureStarterWorkflows(env);
+  const workflows = await env.DB.prepare(`
+    SELECT * FROM flt_workflow_definitions
+    WHERE status IN ('Draft','Testing','Active')
+    ORDER BY name, version DESC
+  `).all();
+  const properties = await env.DB.prepare(`
+    SELECT id, property_location, county FROM properties
+    WHERE archived = 0 ORDER BY updated_at DESC LIMIT 100
+  `).all();
+  const runs = await env.DB.prepare(`
+    SELECT r.*, w.name AS workflow_name, w.version AS workflow_version
+    FROM flt_workflow_runs r
+    JOIN flt_workflow_definitions w ON w.id = r.workflow_definition_id
+    WHERE r.mode = 'DryRun' ORDER BY r.started_at DESC LIMIT 25
+  `).all();
+
+  const wfOptions = workflows.results.map(w => `<option value="${w.id}">${esc(w.name)} v${esc(w.version)} — ${esc(w.status)}</option>`).join("");
+  const propertyOptions = properties.results.map(p => `<option value="${p.id}">${esc(propertyCode(p.id))} — ${esc(p.property_location || p.county || "Property")}</option>`).join("");
+  const rows = runs.results.length ? runs.results.map(r => {
+    let effects=[]; try { effects=JSON.parse(r.proposed_effects_json || "[]"); } catch {}
+    const details=effects.map(e => `<div><span class="badge ${e.mutation ? "warning" : "muted"}">${esc(e.action)}</span> <strong>${esc(e.target)}</strong> — ${esc(e.detail)}</div>`).join("");
+    return `<tr><td>#${r.id}</td><td>${esc(r.workflow_name)} v${esc(r.workflow_version)}</td><td>${esc(r.subject_type)} #${esc(r.subject_id || "")}</td><td>${details}</td><td><span class="badge good">NO CHANGES MADE</span></td></tr>`;
+  }).join("") : '<tr><td colspan="5" class="empty">No Dry Runs have been performed yet.</td></tr>';
+
+  return page(`
+    <h1>Workflow Dry Run</h1>
+    <div class="panel"><h2>Safe Simulation</h2>
+    <p class="section-note">Preview workflow effects without sending messages, changing business records, creating assignments, or executing production mutations.</p>
+    <form method="post" action="/dry-run"><div class="form-grid">
+      <label><span>Workflow</span><select name="workflow_id" required>${wfOptions}</select></label>
+      <label><span>Property Test Record</span><select name="subject_id" required>${propertyOptions}</select></label>
+    </div><div style="margin-top:14px"><button type="submit">Run Safe Simulation</button></div></form></div>
+    <div class="panel"><h2>Recent Simulations</h2><table><thead><tr><th>Run</th><th>Workflow</th><th>Subject</th><th>Proposed Effects</th><th>Production</th></tr></thead><tbody>${rows}</tbody></table></div>
+  `, "Workflow Dry Run | FLTract Admin");
+}
+
 async function detectIntegrityFindings(env) {
   await ensureClientSchema(env);
 
