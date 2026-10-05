@@ -2207,7 +2207,7 @@ async function reviewTrainingSession(env, sessionId, decision, note, staff) {
 }
 
 function roleCanReceiveWork(userRole, requiredRole) {
-  const rank={"employee":1,"mid-level manager":2,"manager":2,"cfo admin assistant":2,"cfo":3,"ceo":4,"admin":5,"developer":5};
+  const rank={"employee":1,"mid-level manager":2,"manager":2,"cfo admin assistant":2,"cfo":3,"ceo":4,"administrator":5,"admin":5,"developer":5};
   return (rank[String(userRole||"").toLowerCase()]||0) >= (rank[String(requiredRole||"Employee").toLowerCase()]||1);
 }
 
@@ -2222,7 +2222,28 @@ async function staffHasCompetency(env, staffUser, competencyKey) {
   return !!row;
 }
 
+async function syncMiniCompRoutingWork(env) {
+  // A single INSERT SELECT keeps repeated and concurrent runs idempotent.
+  await env.DB.prepare(`
+    INSERT INTO flt_work_items (
+      work_type,module_key,subject_type,subject_id,title,priority,status,
+      required_role,required_competency,created_by,created_at
+    )
+    SELECT 'Research Mini-Comp','real-estate','mini_comp_queue',q.id,
+      'Research Mini-Comp — FLP-' || printf('%06d',q.property_id),
+      'Normal','Queued','Employee','RE-001','FLTract MiniComp Queue',q.created_at
+    FROM mini_comp_queue q
+    WHERE q.status IN ('Queued','Retry')
+      AND NOT EXISTS (
+        SELECT 1 FROM flt_work_items w
+        WHERE w.subject_type='mini_comp_queue' AND w.subject_id=q.id
+          AND w.work_type='Research Mini-Comp'
+      )
+  `).run();
+}
+
 async function routeQueuedWork(env, performedBy="FLTract Router") {
+  await syncMiniCompRoutingWork(env);
   const items=await env.DB.prepare(`
     SELECT * FROM flt_work_items WHERE status='Queued'
     ORDER BY CASE priority WHEN 'Critical' THEN 0 WHEN 'High' THEN 1 WHEN 'Normal' THEN 2 ELSE 3 END, created_at
