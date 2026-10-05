@@ -2116,6 +2116,7 @@ FL<span>TRACT</span> Admin
 <a href="/integrity">Data Integrity</a>
 <a href="/dry-run">Dry Run</a>
 <a href="/training">Training</a>
+<a href="/work-routing">Work Routing</a>
 ${trainingManagerAuthorized(staff) ? '<a href="/training/manage">Training Management</a>' : ""}
 <a href="/export.csv">Export CSV</a>
 </nav>
@@ -2921,6 +2922,22 @@ Number(r.rule_value) || 90;
 }
 
 } catch {}
+
+
+/* ============================================================
+   UNIVERSAL WORK ROUTING
+   ============================================================ */
+
+if(request.method==="GET" && url.pathname==="/work-routing"){
+  return new Response(await workRoutingPage(env,staff),{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"}});
+}
+
+if(request.method==="POST" && url.pathname==="/work-routing/run"){
+  if(!sameOriginPost(request)) return new Response("Invalid request origin.",{status:403});
+  if(!trainingManagerAuthorized(staff)) return new Response("Manager authorization required.",{status:403});
+  await routeQueuedWork(env,staff.email||"Authorized Manager");
+  return redirect("/work-routing");
+}
 
 
 /* ============================================================
