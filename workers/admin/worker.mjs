@@ -3395,6 +3395,7 @@ if(request.method==="GET" && url.pathname==="/security-audit"){
    ============================================================ */
 
 if(request.method==="GET" && url.pathname==="/sops/manage"){
+  if(!trainingManagerAuthorized(staff)) return await denyAndAudit(env,staff,request,"View SOP Management");
   const html=await sopManagementPage(env,staff);
   if(!html) return new Response("Manager authorization required.",{status:403});
   return new Response(html,{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"}});
@@ -3557,6 +3558,7 @@ if (request.method === "POST" && url.pathname === "/integrity/scan") {
 
 if (request.method === "POST" && /^\/integrity\/\d+\/review$/.test(url.pathname)) {
   if (!sameOriginPost(request)) return new Response("Invalid request origin.", {status:403});
+  if(!integrityAuthorized(staff)) return await denyAndAudit(env,staff,request,"Review Data Integrity Finding");
   const id = Number(url.pathname.split("/")[2]);
   const form = await request.formData();
   const decision = String(form.get("decision") || "");
@@ -3582,6 +3584,7 @@ if (
 request.method === "GET" &&
 url.pathname === "/export.csv"
 ) {
+if(!integrityAuthorized(staff)) return await denyAndAudit(env,staff,request,"Export Inquiry Data");
 
 const { results } =
 await env.DB.prepare(`
