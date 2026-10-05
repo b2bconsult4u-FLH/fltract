@@ -2213,6 +2213,7 @@ FL<span>TRACT</span> Admin
 <a href="/dry-run">Dry Run</a>
 <a href="/sops">Procedures</a>
 ${trainingManagerAuthorized(staff) ? '<a href="/sops/manage">SOP Management</a>' : ""}
+        ${securityManagerAuthorized(staff) ? '<a href="/security-audit">Security & Audit</a>' : ""}
 <a href="/training">Training</a>
 <a href="/work-routing">Work Routing</a>
 ${trainingManagerAuthorized(staff) ? '<a href="/training/manage">Training Management</a>' : ""}
@@ -2894,6 +2895,7 @@ async function managerRedirectWork(env, workItemId, targetStaffId, reason, staff
     ) VALUES (?,?,?,?,?,?)
   `).bind(item.id,override?"Manager Override":"Manager Redirect",item.assigned_staff_email||"",
     target.email||"",auditReason,staff.email||"Authorized Manager").run();
+  await appendAuditEvent(env,{staff,action:override?"Work Manager Override":"Work Redirect",subjectType:"Work Item",subjectId:item.id,reason:auditReason,metadata:{from:item.assigned_staff_email||"",to:target.email||"",role_ok:roleOk,competency_ok:competencyOk}});
 }
 
 function auditUuid() {
@@ -3088,6 +3090,7 @@ async function publishSopRevision(env, sopId, staff) {
   if(!sop) throw new Error("Draft SOP not found.");
   await env.DB.prepare(`UPDATE flt_sop_definitions SET status='Retired',retired_at=CURRENT_TIMESTAMP WHERE sop_key=? AND status='Published'`).bind(sop.sop_key).run();
   await env.DB.prepare(`UPDATE flt_sop_definitions SET status='Published',published_at=CURRENT_TIMESTAMP WHERE id=?`).bind(sop.id).run();
+  await appendAuditEvent(env,{staff,action:"SOP Published",subjectType:"SOP",subjectId:sop.id,reason:sop.change_summary,metadata:{sop_key:sop.sop_key,version:sop.version,training_impact:sop.training_impact}});
   const staffRows=await env.DB.prepare(`SELECT id,email,role FROM staff_users WHERE active=1`).all();
   for(const u of staffRows.results){
     if(!sopAppliesToRole(sop,u.role)) continue;
@@ -3112,6 +3115,7 @@ async function acknowledgeSopRequirement(env, requirementId, staff) {
   if(!req) throw new Error("SOP requirement not found.");
   if(req.requirement_type!=="Acknowledgement") throw new Error("This requirement requires training and cannot be cleared by acknowledgement.");
   await env.DB.prepare(`UPDATE flt_sop_training_requirements SET status='Completed',completed_at=CURRENT_TIMESTAMP WHERE id=?`).bind(req.id).run();
+  await appendAuditEvent(env,{staff,action:"SOP Acknowledged",subjectType:"SOP Requirement",subjectId:req.id,metadata:{sop_id:req.sop_id}});
   await env.DB.prepare(`
     INSERT OR IGNORE INTO flt_sop_acknowledgements(sop_id,staff_user_id,staff_email,acknowledgement_type)
     VALUES (?,?,?,'Read')
@@ -3364,6 +3368,17 @@ Number(r.rule_value) || 90;
 }
 
 } catch {}
+
+
+/* ============================================================
+   SECURITY / AUDIT
+   ============================================================ */
+
+if(request.method==="GET" && url.pathname==="/security-audit"){
+  const html=await auditPage(env,staff);
+  if(!html) return new Response("Security administrator authorization required.",{status:403});
+  return new Response(html,{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer","content-security-policy":"default-src 'self'; style-src 'self' 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'self'"}});
+}
 
 
 /* ============================================================
