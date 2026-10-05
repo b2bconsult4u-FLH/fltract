@@ -3439,6 +3439,7 @@ if(request.method==="GET" && url.pathname==="/sops"){
    ============================================================ */
 
 if(request.method==="GET" && url.pathname==="/work-routing"){
+  if(!staff?.authenticated || !staff?.user?.active) return await denyAndAudit(env,staff,request,"View Work Routing");
   return new Response(await workRoutingPage(env,staff),{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"}});
 }
 
