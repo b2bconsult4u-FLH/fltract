@@ -2183,6 +2183,7 @@ FL<span>TRACT</span> Admin
 <a href="/integrity">Data Integrity</a>
 <a href="/dry-run">Dry Run</a>
 <a href="/sops">Procedures</a>
+${trainingManagerAuthorized(staff) ? '<a href="/sops/manage">SOP Management</a>' : ""}
 <a href="/training">Training</a>
 <a href="/work-routing">Work Routing</a>
 ${trainingManagerAuthorized(staff) ? '<a href="/training/manage">Training Management</a>' : ""}
@@ -3285,6 +3286,40 @@ Number(r.rule_value) || 90;
 }
 
 } catch {}
+
+
+/* ============================================================
+   SOP MANAGEMENT / VERSIONING
+   ============================================================ */
+
+if(request.method==="GET" && url.pathname==="/sops/manage"){
+  const html=await sopManagementPage(env,staff);
+  if(!html) return new Response("Manager authorization required.",{status:403});
+  return new Response(html,{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"}});
+}
+
+if(request.method==="POST" && /^\\/sops\\/\\d+\\/new-version$/.test(url.pathname)){
+  if(!sameOriginPost(request)) return new Response("Invalid request origin.",{status:403});
+  if(!trainingManagerAuthorized(staff)) return new Response("Manager authorization required.",{status:403});
+  const form=await request.formData();
+  const changeClass=String(form.get("change_class")||"");
+  if(!["Minor","Material"].includes(changeClass)) return new Response("Invalid change classification.",{status:400});
+  await createSopRevision(env,Number(url.pathname.split("/")[2]),changeClass,String(form.get("change_summary")||""),staff);
+  return redirect("/sops/manage");
+}
+
+if(request.method==="POST" && /^\\/sops\\/\\d+\\/publish$/.test(url.pathname)){
+  if(!sameOriginPost(request)) return new Response("Invalid request origin.",{status:403});
+  if(!trainingManagerAuthorized(staff)) return new Response("Manager authorization required.",{status:403});
+  await publishSopRevision(env,Number(url.pathname.split("/")[2]),staff);
+  return redirect("/sops/manage");
+}
+
+if(request.method==="POST" && /^\\/sops\\/requirement\\/\\d+\\/acknowledge$/.test(url.pathname)){
+  if(!sameOriginPost(request)) return new Response("Invalid request origin.",{status:403});
+  await acknowledgeSopRequirement(env,Number(url.pathname.split("/")[3]),staff);
+  return redirect("/sops");
+}
 
 
 /* ============================================================
