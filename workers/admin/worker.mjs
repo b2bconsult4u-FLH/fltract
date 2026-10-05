@@ -2693,7 +2693,8 @@ async function workRoutingPage(env, staff) {
       SUM(CASE WHEN status='Queued' THEN 1 ELSE 0 END) queued,
       SUM(CASE WHEN status='Assigned' THEN 1 ELSE 0 END) assigned,
       SUM(CASE WHEN status='In Progress' THEN 1 ELSE 0 END) in_progress,
-      SUM(CASE WHEN status IN ('Escalated','Escalation Required') THEN 1 ELSE 0 END) escalated
+      SUM(CASE WHEN status IN ('Escalated','Escalation Required') THEN 1 ELSE 0 END) escalated,
+      SUM(CASE WHEN status IN ('Deadline Warning','Overdue') THEN 1 ELSE 0 END) deadline_risk
     FROM flt_work_items
   `).first();
   const rows=items.results.length?items.results.map(w=>`<tr>
@@ -2719,8 +2720,9 @@ async function workRoutingPage(env, staff) {
       <div class="management-card"><div class="label">Assigned</div><div class="summary-number">${Number(counts?.assigned||0)}</div></div>
       <div class="management-card"><div class="label">In Progress</div><div class="summary-number">${Number(counts?.in_progress||0)}</div></div>
       <div class="management-card warning"><div class="label">Escalated</div><div class="summary-number">${Number(counts?.escalated||0)}</div></div>
+      <div class="management-card warning"><div class="label">Deadline Risk</div><div class="summary-number">${Number(counts?.deadline_risk||0)}</div></div>
     </div>
-    ${trainingManagerAuthorized(staff)?'<form method="post" action="/work-routing/run"><button type="submit">Route Queued Work</button></form>':""}
+    ${trainingManagerAuthorized(staff)?'<form method="post" action="/work-routing/run"><button type="submit">Route Queued Work</button></form><form method="post" action="/work-routing/check-deadlines" style="margin-top:8px"><button type="submit">Check Deadlines Now</button></form>':""}
     </div>
     <div class="panel"><h2>Work Queue</h2><table><thead><tr><th>ID</th><th>Work</th><th>Module</th><th>Priority</th><th>Required Role</th><th>Competency</th><th>Assigned To</th><th>Status</th><th>Routing Reason</th></tr></thead><tbody>${rows}</tbody></table></div>
   `,"Universal Work Routing | FLTract Admin");
@@ -3060,6 +3062,13 @@ Number(r.rule_value) || 90;
 
 if(request.method==="GET" && url.pathname==="/work-routing"){
   return new Response(await workRoutingPage(env,staff),{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"}});
+}
+
+if(request.method==="POST" && url.pathname==="/work-routing/check-deadlines"){
+  if(!sameOriginPost(request)) return new Response("Invalid request origin.",{status:403});
+  if(!trainingManagerAuthorized(staff)) return new Response("Manager authorization required.",{status:403});
+  await checkWorkDeadlines(env,staff.email||"Authorized Manager");
+  return redirect("/work-routing");
 }
 
 if(request.method==="POST" && /^\\/work-routing\\/\\d+\\/redirect$/.test(url.pathname)){
