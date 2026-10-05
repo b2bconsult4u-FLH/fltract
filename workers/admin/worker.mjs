@@ -2865,6 +2865,102 @@ async function managerRedirectWork(env, workItemId, targetStaffId, reason, staff
     target.email||"",auditReason,staff.email||"Authorized Manager").run();
 }
 
+function sopAppliesToRole(sop, role) {
+  let roles=[]; try{roles=JSON.parse(sop.target_roles_json||"[]");}catch{}
+  if(!roles.length) return true;
+  const r=String(role||"Employee").toLowerCase();
+  return roles.some(x=>String(x).toLowerCase()===r || String(x).toLowerCase()==="all");
+}
+
+async function ensureStarterSops(env) {
+  const procedures=[
+    {key:"RE-PROPERTY-INTAKE",name:"Property Intake and Validation",roles:["Employee","Mid-level Manager","Manager","CEO","Admin"],training:"Required",
+     steps:[
+      {key:"verify-client",label:"Verify or link the client record",roles:["Employee","Mid-level Manager","Manager"]},
+      {key:"inspect-property",label:"Review submitted property information for completeness",roles:["Employee","Mid-level Manager","Manager"]},
+      {key:"parcel-validation",label:"Validate parcel information against the configured authoritative source",roles:["Employee","Mid-level Manager","Manager"]},
+      {key:"preserve-provenance",label:"Preserve submitted and authoritative values when they conflict",roles:["Employee","Mid-level Manager","Manager"]},
+      {key:"mini-comp",label:"Confirm mini-comp/research requirement",roles:["Employee","Mid-level Manager","Manager"]},
+      {key:"manager-review",label:"Review exceptions, overrides, and unresolved conflicts",roles:["Mid-level Manager","Manager","CEO","Admin"]},
+      {key:"executive-oversight",label:"Review material escalations and policy exceptions",roles:["CEO","Admin"]}
+     ],
+     prohibited:["Invent parcel or ownership data","Silently overwrite conflicting authoritative facts","Bypass required management review"]},
+    {key:"CORE-WORK-ROUTING",name:"Work Routing, Escalation and Manager Override",roles:["Employee","Mid-level Manager","Manager","CEO","Admin"],training:"Required",
+     steps:[
+      {key:"accept-work",label:"Review assigned work, priority, and deadline",roles:["Employee","Mid-level Manager","Manager"]},
+      {key:"work-sla",label:"Act within the assigned SLA and escalate obstacles promptly",roles:["Employee","Mid-level Manager","Manager"]},
+      {key:"review-escalation",label:"Review unroutable or deadline-risk work",roles:["Mid-level Manager","Manager","CEO","Admin"]},
+      {key:"redirect",label:"Redirect work with a documented reason when appropriate",roles:["Mid-level Manager","Manager","CEO","Admin"]},
+      {key:"override",label:"Use manager override only for a specific work item and document the reason",roles:["Manager","CEO","Admin"]}
+     ],
+     prohibited:["Ignore deadline warnings","Permanently alter competency because of a one-item override","Redirect work without documenting the reason"]}
+  ];
+  for(const p of procedures){
+    await env.DB.prepare(`
+      INSERT OR IGNORE INTO flt_sop_definitions(
+        sop_key,module_key,name,version,status,target_roles_json,procedure_json,
+        prohibited_actions_json,training_impact,change_summary,created_by,published_at
+      ) VALUES (?,'real-estate',?,1,'Published',?,?,?,?,?,'FLTract Core',CURRENT_TIMESTAMP)
+    `).bind(p.key,p.name,JSON.stringify(p.roles),JSON.stringify(p.steps),JSON.stringify(p.prohibited),
+      p.training,"Initial operating procedure").run();
+  }
+}
+
+function roleSpecificSopSteps(sop, role) {
+  let steps=[]; try{steps=JSON.parse(sop.procedure_json||"[]");}catch{}
+  const r=String(role||"Employee").toLowerCase();
+  return steps.filter(step=>{
+    const roles=Array.isArray(step.roles)?step.roles:[];
+    return !roles.length || roles.some(x=>String(x).toLowerCase()===r || String(x).toLowerCase()==="all");
+  });
+}
+
+async function assignSopRetraining(env, sop, reason) {
+  if(String(sop.training_impact||"None")==="None") return 0;
+  const staff=await env.DB.prepare(`SELECT id,email,role FROM staff_users WHERE active=1`).all();
+  let count=0;
+  for(const u of staff.results){
+    if(!sopAppliesToRole(sop,u.role)) continue;
+    const existing=await env.DB.prepare(`
+      SELECT id FROM flt_sop_training_requirements WHERE sop_id=? AND staff_email=? AND status='Required' LIMIT 1
+    `).bind(sop.id,u.email||"").first();
+    if(existing) continue;
+    await env.DB.prepare(`
+      INSERT INTO flt_sop_training_requirements(sop_id,staff_user_id,staff_email,role_at_assignment,requirement_type,status,reason)
+      VALUES (?,?,?,?,'Retraining','Required',?)
+    `).bind(sop.id,u.id,u.email||"",u.role||"",reason||sop.change_summary||"Published SOP requires training.").run();
+    count++;
+  }
+  return count;
+}
+
+async function sopPage(env, staff) {
+  await ensureStarterSops(env);
+  const role=staff.user?.role||"Employee";
+  const sops=await env.DB.prepare(`SELECT * FROM flt_sop_definitions WHERE status='Published' ORDER BY module_key,name,version DESC`).all();
+  const applicable=sops.results.filter(x=>sopAppliesToRole(x,role));
+  const requirements=await env.DB.prepare(`
+    SELECT r.*,s.sop_key,s.name,s.version FROM flt_sop_training_requirements r
+    JOIN flt_sop_definitions s ON s.id=r.sop_id
+    WHERE LOWER(r.staff_email)=LOWER(?) AND r.status='Required' ORDER BY r.assigned_at
+  `).bind(staff.email||"").all();
+  const cards=applicable.map(sop=>{
+    const steps=roleSpecificSopSteps(sop,role);
+    let prohibited=[]; try{prohibited=JSON.parse(sop.prohibited_actions_json||"[]");}catch{}
+    return `<div class="panel"><h2>${esc(sop.name)} <span class="badge">v${esc(sop.version)}</span></h2>
+      <p class="section-note">Role view: <strong>${esc(role)}</strong>. FLTract is showing the portions of this procedure applicable at this login level.</p>
+      <ol>${steps.map(x=>`<li>${esc(x.label)}</li>`).join("")}</ol>
+      ${prohibited.length?`<h3>Prohibited Actions</h3><ul>${prohibited.map(x=>`<li>${esc(x)}</li>`).join("")}</ul>`:""}
+      <p class="small">Training impact: ${esc(sop.training_impact)} · ${esc(sop.change_summary)}</p></div>`;
+  }).join("");
+  const req=requirements.results.length?requirements.results.map(r=>`<tr><td>${esc(r.sop_key)}</td><td>${esc(r.name)} v${esc(r.version)}</td><td>${esc(r.requirement_type)}</td><td>${esc(r.reason)}</td><td><span class="badge warning">${esc(r.status)}</span></td></tr>`).join(""):'<tr><td colspan="5" class="empty">No SOP retraining requirements are pending.</td></tr>';
+  return page(`<h1>Procedures & SOPs</h1>
+    <div class="panel"><h2>Your Operating Procedures</h2><p class="section-note">SOP content is role-aware. Employees see the instructions they need to perform assigned work; managers see supervisory and override steps; executives see material escalation and policy responsibilities.</p></div>
+    <div class="panel"><h2>Your Training Requirements</h2><table><thead><tr><th>SOP</th><th>Procedure</th><th>Requirement</th><th>Reason</th><th>Status</th></tr></thead><tbody>${req}</tbody></table></div>
+    ${cards||'<div class="panel">No published procedures apply to this role.</div>'}
+  `,"Procedures & SOPs | FLTract Admin");
+}
+
 async function detectIntegrityFindings(env) {
   await ensureClientSchema(env);
 
