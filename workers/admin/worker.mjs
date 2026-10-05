@@ -2671,6 +2671,8 @@ async function routeQueuedWork(env, performedBy="FLTract Router") {
 }
 
 async function workRoutingPage(env, staff) {
+  const activeStaff=await env.DB.prepare(`SELECT id,email,role FROM staff_users WHERE active=1 ORDER BY email`).all();
+  const staffOptions=activeStaff.results.map(u=>`<option value="${u.id}">${esc(u.email||("Staff #"+u.id))} — ${esc(u.role||"Employee")}</option>`).join("");
   const items=await env.DB.prepare(`
     SELECT * FROM flt_work_items ORDER BY
     CASE status WHEN 'Queued' THEN 0 WHEN 'Assigned' THEN 1 WHEN 'In Progress' THEN 2 ELSE 3 END,
@@ -2689,7 +2691,15 @@ async function workRoutingPage(env, staff) {
     <td><span class="badge">${esc(w.priority)}</span></td><td>${esc(w.required_role)}</td>
     <td>${esc(w.required_competency||"None")}</td><td>${esc(w.assigned_staff_email||"Unassigned")}</td>
     <td><span class="badge ${w.status==="Queued"?"warning":w.status==="Assigned"?"good":"muted"}">${esc(w.status)}</span></td>
-    <td class="small">${esc(w.routing_reason||"")}</td></tr>`).join(""):'<tr><td colspan="9" class="empty">No work items have been queued yet.</td></tr>';
+    <td class="small">${esc(w.routing_reason||"")}${trainingManagerAuthorized(staff)&&["Escalated","Escalation Required","Assigned"].includes(w.status)?`
+      <form method="post" action="/work-routing/${w.id}/redirect" style="margin-top:8px">
+        <select name="target_staff_id" required>
+          <option value="">Redirect to active employee…</option>
+          ${staffOptions}
+        </select>
+        <input name="reason" maxlength="500" placeholder="Reason for redirect / override" required>
+        <button type="submit">Redirect Work</button>
+      </form>`:""}</td></tr>`).join(""):'<tr><td colspan="9" class="empty">No work items have been queued yet.</td></tr>';
   return page(`<h1>Universal Work Routing</h1>
     <div class="panel"><h2>Routing Dashboard</h2>
     <p class="section-note">FLTract routes work only to active staff who satisfy the configured role and competency requirements. Training results can establish competency but never grant permissions.</p>
@@ -2704,6 +2714,35 @@ async function workRoutingPage(env, staff) {
     </div>
     <div class="panel"><h2>Work Queue</h2><table><thead><tr><th>ID</th><th>Work</th><th>Module</th><th>Priority</th><th>Required Role</th><th>Competency</th><th>Assigned To</th><th>Status</th><th>Routing Reason</th></tr></thead><tbody>${rows}</tbody></table></div>
   `,"Universal Work Routing | FLTract Admin");
+}
+
+async function managerRedirectWork(env, workItemId, targetStaffId, reason, staff) {
+  if(!trainingManagerAuthorized(staff)) throw new Error("Manager authorization required.");
+  const item=await env.DB.prepare(`SELECT * FROM flt_work_items WHERE id=? LIMIT 1`).bind(workItemId).first();
+  if(!item) throw new Error("Work item not found.");
+  if(!["Escalated","Escalation Required","Assigned"].includes(item.status)) throw new Error("This work item is not eligible for manager redirect.");
+  const target=await env.DB.prepare(`SELECT * FROM staff_users WHERE id=? AND active=1 LIMIT 1`).bind(targetStaffId).first();
+  if(!target) throw new Error("Target employee is not active or does not exist.");
+
+  const roleEligible=roleCanReceiveWork(target.role,item.required_role);
+  const competencyEligible=await staffHasCompetency(env,target,item.required_competency);
+  const override=!(roleEligible && competencyEligible);
+  const managerReason=String(reason||"").trim().slice(0,500);
+  if(!managerReason) throw new Error("Manager redirect reason is required.");
+  const auditReason=override
+    ? `MANAGER OVERRIDE — normal routing requirements not fully satisfied. ${managerReason}`
+    : `Manager redirect. ${managerReason}`;
+
+  await env.DB.prepare(`
+    UPDATE flt_work_items SET status='Assigned',assigned_staff_user_id=?,assigned_staff_email=?,
+      routing_reason=?,assigned_at=CURRENT_TIMESTAMP WHERE id=?
+  `).bind(target.id,target.email||"",auditReason,item.id).run();
+  await env.DB.prepare(`
+    INSERT INTO flt_work_routing_events(
+      work_item_id,event_type,from_staff_email,to_staff_email,reason,performed_by
+    ) VALUES (?,?,?,?,?,?)
+  `).bind(item.id,override?"Manager Override":"Manager Redirect",item.assigned_staff_email||"",
+    target.email||"",auditReason,staff.email||"Authorized Manager").run();
 }
 
 async function detectIntegrityFindings(env) {
@@ -2960,6 +2999,18 @@ Number(r.rule_value) || 90;
 
 if(request.method==="GET" && url.pathname==="/work-routing"){
   return new Response(await workRoutingPage(env,staff),{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"}});
+}
+
+if(request.method==="POST" && /^\\/work-routing\\/\\d+\\/redirect$/.test(url.pathname)){
+  if(!sameOriginPost(request)) return new Response("Invalid request origin.",{status:403});
+  if(!trainingManagerAuthorized(staff)) return new Response("Manager authorization required.",{status:403});
+  const workItemId=Number(url.pathname.split("/")[2]);
+  const form=await request.formData();
+  const targetStaffId=Number(form.get("target_staff_id"));
+  const reason=String(form.get("reason")||"");
+  if(!targetStaffId || !reason.trim()) return new Response("Target employee and redirect reason are required.",{status:400});
+  await managerRedirectWork(env,workItemId,targetStaffId,reason,staff);
+  return redirect("/work-routing");
 }
 
 if(request.method==="POST" && url.pathname==="/work-routing/run"){
