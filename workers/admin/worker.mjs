@@ -2461,6 +2461,86 @@ async function submitTrainingSession(env, scenarioId, selectedActions, staff) {
   return Number(insert?.meta?.last_row_id)||0;
 }
 
+function trainingManagerAuthorized(staff) {
+  if (!staff?.authenticated || !staff?.user?.active) return false;
+  const role = String(staff.user.role || "").trim().toLowerCase();
+  return ["admin","developer","ceo","cfo","mid-level manager","manager"].includes(role);
+}
+
+async function trainingManagerPage(env, staff) {
+  if (!trainingManagerAuthorized(staff)) return null;
+  await ensureStarterTrainingScenarios(env);
+  const summary = await env.DB.prepare(`
+    SELECT
+      COUNT(*) AS total_sessions,
+      SUM(CASE WHEN status='Passed' THEN 1 ELSE 0 END) AS passed,
+      SUM(CASE WHEN status='Needs Review' THEN 1 ELSE 0 END) AS needs_review,
+      ROUND(AVG(CASE WHEN score IS NOT NULL THEN score END),0) AS avg_score
+    FROM flt_training_sessions
+  `).first();
+  const sessions = await env.DB.prepare(`
+    SELECT s.*, t.scenario_key, t.name AS scenario_name, t.target_role, t.passing_score
+    FROM flt_training_sessions s
+    JOIN flt_training_scenarios t ON t.id=s.scenario_id
+    ORDER BY CASE WHEN s.status='Needs Review' THEN 0 ELSE 1 END, s.started_at DESC
+    LIMIT 100
+  `).all();
+  const competencies = await env.DB.prepare(`
+    SELECT staff_email, COUNT(*) AS competency_count, MAX(demonstrated_at) AS latest
+    FROM flt_training_competencies
+    GROUP BY staff_email ORDER BY latest DESC LIMIT 100
+  `).all();
+
+  const rows=sessions.results.length?sessions.results.map(x=>{
+    let feedback=[]; try{feedback=JSON.parse(x.feedback_json||"[]");}catch{}
+    const feedbackHtml=feedback.map(v=>`<div><span class="badge ${v.type==="Good"?"good":v.type==="Prohibited"?"danger":"warning"}">${esc(v.type)}</span> ${esc(String(v.action||"").replaceAll("-"," "))}</div>`).join("");
+    const review=x.status==="Needs Review"?`<form method="post" action="/training/session/${x.id}/review">
+      <select name="decision" required><option value="">Decision</option><option value="Reviewed-Pass">Confirm Pass</option><option value="Reviewed-Remediate">Require Remediation</option></select>
+      <input name="review_note" maxlength="500" placeholder="Manager review note" required>
+      <button type="submit">Record Review</button></form>`:`<span class="small">${esc(x.reviewed_by||"")} ${esc(x.review_note||"")}</span>`;
+    return `<tr><td>#${x.id}</td><td>${esc(x.trainee_email||"Staff")}</td><td>${esc(x.scenario_key)} — ${esc(x.scenario_name)}</td><td>${esc(x.score??"")}%</td><td><span class="badge ${x.status==="Passed"||x.status==="Reviewed-Pass"?"good":x.status==="Needs Review"?"warning":"danger"}">${esc(x.status)}</span></td><td>${feedbackHtml}</td><td>${review}</td></tr>`;
+  }).join(""):'<tr><td colspan="7" class="empty">No training sessions yet.</td></tr>';
+
+  const compRows=competencies.results.length?competencies.results.map(c=>`<tr><td>${esc(c.staff_email||"Staff")}</td><td>${esc(c.competency_count)}</td><td>${esc(c.latest||"")}</td></tr>`).join(""):'<tr><td colspan="3" class="empty">No demonstrated competencies yet.</td></tr>';
+
+  return page(`<h1>Training Management</h1>
+    <div class="panel"><h2>Management Dashboard</h2>
+      <p class="section-note">Training results support readiness decisions but never grant production permissions automatically. Management retains authorization control.</p>
+      <div class="management-grid">
+        <div class="management-card"><div class="label">Sessions</div><div class="summary-number">${Number(summary?.total_sessions||0)}</div></div>
+        <div class="management-card"><div class="label">Passed</div><div class="summary-number">${Number(summary?.passed||0)}</div></div>
+        <div class="management-card warning"><div class="label">Needs Review</div><div class="summary-number">${Number(summary?.needs_review||0)}</div></div>
+        <div class="management-card"><div class="label">Average Score</div><div class="summary-number">${Number(summary?.avg_score||0)}%</div></div>
+      </div>
+    </div>
+    <div class="panel"><h2>Session Review Queue</h2><table><thead><tr><th>ID</th><th>Staff</th><th>Scenario</th><th>Score</th><th>Status</th><th>Feedback</th><th>Manager Review</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="panel"><h2>Competency Summary</h2><table><thead><tr><th>Staff</th><th>Demonstrated Competencies</th><th>Latest</th></tr></thead><tbody>${compRows}</tbody></table></div>
+  `,"Training Management | FLTract Admin");
+}
+
+async function reviewTrainingSession(env, sessionId, decision, note, staff) {
+  if (!trainingManagerAuthorized(staff)) throw new Error("Manager authorization required.");
+  if (!["Reviewed-Pass","Reviewed-Remediate"].includes(decision)) throw new Error("Invalid training review decision.");
+  const session=await env.DB.prepare(`
+    SELECT s.*, t.scenario_key, t.module_key
+    FROM flt_training_sessions s JOIN flt_training_scenarios t ON t.id=s.scenario_id
+    WHERE s.id=? LIMIT 1
+  `).bind(sessionId).first();
+  if(!session) throw new Error("Training session not found.");
+  await env.DB.prepare(`
+    UPDATE flt_training_sessions SET status=?, reviewed_by=?, reviewed_at=CURRENT_TIMESTAMP,
+      review_note=? WHERE id=?
+  `).bind(decision,staff.email||"Authorized Manager",String(note||"").slice(0,500),sessionId).run();
+  if(decision==="Reviewed-Pass"){
+    await env.DB.prepare(`
+      INSERT INTO flt_training_competencies (
+        staff_user_id,staff_email,competency_key,module_key,scenario_id,scenario_version,result,score,reviewed_by
+      ) VALUES (?,?,?,?,?,?,?,?,?)
+    `).bind(session.trainee_staff_user_id||null,session.trainee_email||"",session.scenario_key,session.module_key,
+      session.scenario_id,session.scenario_version,"Manager Confirmed",session.score,staff.email||"Authorized Manager").run();
+  }
+}
+
 async function detectIntegrityFindings(env) {
   await ensureClientSchema(env);
 
