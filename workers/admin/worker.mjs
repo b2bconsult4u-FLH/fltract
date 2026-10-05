@@ -2182,6 +2182,7 @@ FL<span>TRACT</span> Admin
 <a href="/followups">Follow Ups</a>
 <a href="/integrity">Data Integrity</a>
 <a href="/dry-run">Dry Run</a>
+<a href="/sops">Procedures</a>
 <a href="/training">Training</a>
 <a href="/work-routing">Work Routing</a>
 ${trainingManagerAuthorized(staff) ? '<a href="/training/manage">Training Management</a>' : ""}
@@ -3207,6 +3208,15 @@ Number(r.rule_value) || 90;
 }
 
 } catch {}
+
+
+/* ============================================================
+   PROCEDURES / SOP ENGINE
+   ============================================================ */
+
+if(request.method==="GET" && url.pathname==="/sops"){
+  return new Response(await sopPage(env,staff),{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"}});
+}
 
 
 /* ============================================================
