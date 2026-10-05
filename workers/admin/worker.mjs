@@ -2584,6 +2584,97 @@ async function reviewTrainingSession(env, sessionId, decision, note, staff) {
   }
 }
 
+function roleCanReceiveWork(userRole, requiredRole) {
+  const rank={"employee":1,"mid-level manager":2,"manager":2,"cfo admin assistant":2,"cfo":3,"ceo":4,"admin":5,"developer":5};
+  return (rank[String(userRole||"").toLowerCase()]||0) >= (rank[String(requiredRole||"Employee").toLowerCase()]||1);
+}
+
+async function staffHasCompetency(env, staffUser, competencyKey) {
+  if(!competencyKey) return true;
+  const row=await env.DB.prepare(`
+    SELECT id FROM flt_training_competencies
+    WHERE (staff_user_id=? OR LOWER(staff_email)=LOWER(?))
+      AND competency_key=? AND result IN ('Demonstrated','Manager Confirmed')
+    ORDER BY demonstrated_at DESC LIMIT 1
+  `).bind(staffUser.id,staffUser.email||"",competencyKey).first();
+  return !!row;
+}
+
+async function routeQueuedWork(env, performedBy="FLTract Router") {
+  const items=await env.DB.prepare(`
+    SELECT * FROM flt_work_items WHERE status='Queued'
+    ORDER BY CASE priority WHEN 'Critical' THEN 0 WHEN 'High' THEN 1 WHEN 'Normal' THEN 2 ELSE 3 END, created_at
+    LIMIT 100
+  `).all();
+  const staff=await env.DB.prepare(`SELECT * FROM staff_users WHERE active=1 ORDER BY id`).all();
+  let assigned=0,held=0;
+  for(const item of items.results){
+    const candidates=[];
+    for(const u of staff.results){
+      if(!roleCanReceiveWork(u.role,item.required_role)) continue;
+      if(!(await staffHasCompetency(env,u,item.required_competency))) continue;
+      const load=await env.DB.prepare(`
+        SELECT COUNT(*) AS n FROM flt_work_items
+        WHERE assigned_staff_user_id=? AND status IN ('Assigned','In Progress')
+      `).bind(u.id).first();
+      candidates.push({user:u,load:Number(load?.n||0)});
+    }
+    candidates.sort((a,b)=>a.load-b.load || a.user.id-b.user.id);
+    if(!candidates.length){
+      held++;
+      await env.DB.prepare(`UPDATE flt_work_items SET routing_reason=? WHERE id=?`)
+        .bind("No active staff member currently satisfies the required role/competency.",item.id).run();
+      continue;
+    }
+    const pick=candidates[0].user;
+    const reason=`Eligible role ${pick.role}; competency requirement ${item.required_competency||"none"}; lowest eligible active workload.`;
+    await env.DB.prepare(`
+      UPDATE flt_work_items SET status='Assigned',assigned_staff_user_id=?,assigned_staff_email=?,
+        routing_reason=?,assigned_at=CURRENT_TIMESTAMP WHERE id=? AND status='Queued'
+    `).bind(pick.id,pick.email||"",reason,item.id).run();
+    await env.DB.prepare(`
+      INSERT INTO flt_work_routing_events(work_item_id,event_type,to_staff_email,reason,performed_by)
+      VALUES (?,'Assigned',?,?,?)
+    `).bind(item.id,pick.email||"",reason,performedBy).run();
+    assigned++;
+  }
+  return {assigned,held};
+}
+
+async function workRoutingPage(env, staff) {
+  const items=await env.DB.prepare(`
+    SELECT * FROM flt_work_items ORDER BY
+    CASE status WHEN 'Queued' THEN 0 WHEN 'Assigned' THEN 1 WHEN 'In Progress' THEN 2 ELSE 3 END,
+    created_at DESC LIMIT 150
+  `).all();
+  const counts=await env.DB.prepare(`
+    SELECT COUNT(*) total,
+      SUM(CASE WHEN status='Queued' THEN 1 ELSE 0 END) queued,
+      SUM(CASE WHEN status='Assigned' THEN 1 ELSE 0 END) assigned,
+      SUM(CASE WHEN status='In Progress' THEN 1 ELSE 0 END) in_progress
+    FROM flt_work_items
+  `).first();
+  const rows=items.results.length?items.results.map(w=>`<tr>
+    <td>#${w.id}</td><td>${esc(w.title||w.work_type)}</td><td>${esc(w.module_key)}</td>
+    <td><span class="badge">${esc(w.priority)}</span></td><td>${esc(w.required_role)}</td>
+    <td>${esc(w.required_competency||"None")}</td><td>${esc(w.assigned_staff_email||"Unassigned")}</td>
+    <td><span class="badge ${w.status==="Queued"?"warning":w.status==="Assigned"?"good":"muted"}">${esc(w.status)}</span></td>
+    <td class="small">${esc(w.routing_reason||"")}</td></tr>`).join(""):'<tr><td colspan="9" class="empty">No work items have been queued yet.</td></tr>';
+  return page(`<h1>Universal Work Routing</h1>
+    <div class="panel"><h2>Routing Dashboard</h2>
+    <p class="section-note">FLTract routes work only to active staff who satisfy the configured role and competency requirements. Training results can establish competency but never grant permissions.</p>
+    <div class="management-grid">
+      <div class="management-card"><div class="label">All Work</div><div class="summary-number">${Number(counts?.total||0)}</div></div>
+      <div class="management-card warning"><div class="label">Queued</div><div class="summary-number">${Number(counts?.queued||0)}</div></div>
+      <div class="management-card"><div class="label">Assigned</div><div class="summary-number">${Number(counts?.assigned||0)}</div></div>
+      <div class="management-card"><div class="label">In Progress</div><div class="summary-number">${Number(counts?.in_progress||0)}</div></div>
+    </div>
+    ${trainingManagerAuthorized(staff)?'<form method="post" action="/work-routing/run"><button type="submit">Route Queued Work</button></form>':""}
+    </div>
+    <div class="panel"><h2>Work Queue</h2><table><thead><tr><th>ID</th><th>Work</th><th>Module</th><th>Priority</th><th>Required Role</th><th>Competency</th><th>Assigned To</th><th>Status</th><th>Routing Reason</th></tr></thead><tbody>${rows}</tbody></table></div>
+  `,"Universal Work Routing | FLTract Admin");
+}
+
 async function detectIntegrityFindings(env) {
   await ensureClientSchema(env);
 
