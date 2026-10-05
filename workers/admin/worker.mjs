@@ -2941,6 +2941,8 @@ header .wrap{
 }
 
 .brand{
+  color:#fff;
+  text-decoration:none;
   font-size:1.5rem;
   font-weight:900;
 }
@@ -3308,9 +3310,9 @@ label span{
 
 <div class="wrap">
 
-<div class="brand">
+<a class="brand" href="/" aria-label="FLTract Admin home">
 FL<span>TRACT</span> Admin
-</div>
+</a>
 
 <nav>
 <a href="/">Inquiries</a>
