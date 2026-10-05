@@ -562,6 +562,48 @@ async function ensureClientSchema(env) {
         reviewed_by TEXT NOT NULL DEFAULT ''
       )
     `)
+,
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS flt_work_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        work_type TEXT NOT NULL,
+        module_key TEXT NOT NULL DEFAULT 'core',
+        subject_type TEXT NOT NULL DEFAULT '',
+        subject_id INTEGER,
+        title TEXT NOT NULL DEFAULT '',
+        priority TEXT NOT NULL DEFAULT 'Normal',
+        status TEXT NOT NULL DEFAULT 'Queued',
+        required_role TEXT NOT NULL DEFAULT 'Employee',
+        required_competency TEXT NOT NULL DEFAULT '',
+        assigned_staff_user_id INTEGER,
+        assigned_staff_email TEXT NOT NULL DEFAULT '',
+        routing_reason TEXT NOT NULL DEFAULT '',
+        created_by TEXT NOT NULL DEFAULT 'FLTract',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        assigned_at TEXT,
+        completed_at TEXT
+      )
+    `),
+    env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_work_items_queue
+      ON flt_work_items(status, priority, created_at)
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS flt_work_routing_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        work_item_id INTEGER NOT NULL,
+        event_type TEXT NOT NULL,
+        from_staff_email TEXT NOT NULL DEFAULT '',
+        to_staff_email TEXT NOT NULL DEFAULT '',
+        reason TEXT NOT NULL DEFAULT '',
+        performed_by TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `),
+    env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_work_routing_events_item
+      ON flt_work_routing_events(work_item_id, created_at)
+    `)
   ]);
 
   clientSchemaReady = true;
