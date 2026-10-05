@@ -2073,6 +2073,7 @@ FL<span>TRACT</span> Admin
 <a href="/followups">Follow Ups</a>
 <a href="/integrity">Data Integrity</a>
 <a href="/dry-run">Dry Run</a>
+<a href="/training">Training</a>
 <a href="/export.csv">Export CSV</a>
 </nav>
 
@@ -2706,6 +2707,27 @@ Number(r.rule_value) || 90;
 }
 
 } catch {}
+
+
+/* ============================================================
+   TRAINING MODE
+   ============================================================ */
+
+if (request.method === "GET" && url.pathname === "/training") {
+  return new Response(await trainingPage(env, staff), {
+    headers: {"content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"}
+  });
+}
+
+if (request.method === "POST" && url.pathname === "/training/start") {
+  if (!sameOriginPost(request)) return new Response("Invalid request origin.", {status:403});
+  const form=await request.formData();
+  const scenarioId=Number(form.get("scenario_id"));
+  const actions=form.getAll("actions").map(v=>String(v));
+  if(!scenarioId) return new Response("Training scenario is required.",{status:400});
+  await submitTrainingSession(env,scenarioId,actions,staff);
+  return redirect("/training");
+}
 
 
 /* ============================================================
