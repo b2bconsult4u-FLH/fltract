@@ -581,8 +581,18 @@ async function ensureClientSchema(env) {
         created_by TEXT NOT NULL DEFAULT 'FLTract',
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         assigned_at TEXT,
-        completed_at TEXT
+        completed_at TEXT,
+        due_at TEXT,
+        warning_at TEXT,
+        sla_minutes INTEGER,
+        deadline_type TEXT NOT NULL DEFAULT 'Operational',
+        escalation_level INTEGER NOT NULL DEFAULT 0,
+        last_deadline_check_at TEXT
       )
+    `),
+    env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_work_items_deadline
+      ON flt_work_items(status, due_at, warning_at)
     `),
     env.DB.prepare(`
       CREATE INDEX IF NOT EXISTS idx_work_items_queue
@@ -2714,6 +2724,57 @@ async function workRoutingPage(env, staff) {
     </div>
     <div class="panel"><h2>Work Queue</h2><table><thead><tr><th>ID</th><th>Work</th><th>Module</th><th>Priority</th><th>Required Role</th><th>Competency</th><th>Assigned To</th><th>Status</th><th>Routing Reason</th></tr></thead><tbody>${rows}</tbody></table></div>
   `,"Universal Work Routing | FLTract Admin");
+}
+
+async function ensureWorkDeadlineColumns(env) {
+  const cols=await env.DB.prepare("PRAGMA table_info(flt_work_items)").all();
+  const names=new Set(cols.results.map(c=>c.name));
+  const adds=[
+    ["due_at","TEXT"],["warning_at","TEXT"],["sla_minutes","INTEGER"],
+    ["deadline_type","TEXT NOT NULL DEFAULT 'Operational'"],
+    ["escalation_level","INTEGER NOT NULL DEFAULT 0"],["last_deadline_check_at","TEXT"]
+  ];
+  for(const [name,type] of adds) if(!names.has(name)) await env.DB.prepare(`ALTER TABLE flt_work_items ADD COLUMN ${name} ${type}`).run();
+}
+
+async function checkWorkDeadlines(env, performedBy="FLTract SLA Monitor") {
+  await ensureWorkDeadlineColumns(env);
+  const now=new Date();
+  const rows=await env.DB.prepare(`
+    SELECT * FROM flt_work_items
+    WHERE status NOT IN ('Completed','Closed','Cancelled')
+      AND due_at IS NOT NULL AND TRIM(due_at)<>''
+    ORDER BY due_at LIMIT 250
+  `).all();
+  const staff=await env.DB.prepare(`SELECT * FROM staff_users WHERE active=1 ORDER BY id`).all();
+  let warned=0,escalated=0,overdue=0;
+  for(const item of rows.results){
+    const due=new Date(item.due_at);
+    if(Number.isNaN(due.getTime())) continue;
+    const warning=item.warning_at?new Date(item.warning_at):new Date(due.getTime()-Math.max(30,Number(item.sla_minutes||120)*0.25)*60000);
+    let eventType="",reason="",level=Number(item.escalation_level||0);
+    if(now>=due && level<2){
+      eventType="Deadline Overdue"; reason=`Work deadline passed at ${item.due_at}. Immediate management intervention required.`; level=2; overdue++;
+    } else if(now>=warning && level<1){
+      eventType="Deadline Warning"; reason=`Work is approaching its deadline of ${item.due_at}. Escalated before lateness.`; level=1; warned++;
+    } else { await env.DB.prepare(`UPDATE flt_work_items SET last_deadline_check_at=CURRENT_TIMESTAMP WHERE id=?`).bind(item.id).run(); continue; }
+
+    const managers=staff.results.filter(u=>roleCanReceiveWork(u.role,"Manager"));
+    const manager=managers[0]||null;
+    const newStatus=eventType==="Deadline Overdue"?"Overdue":(item.status==="Escalated"?"Escalated":"Deadline Warning");
+    await env.DB.prepare(`
+      UPDATE flt_work_items SET status=?,escalation_level=?,last_deadline_check_at=CURRENT_TIMESTAMP,
+        assigned_staff_user_id=COALESCE(?,assigned_staff_user_id),
+        assigned_staff_email=CASE WHEN ?<>'' THEN ? ELSE assigned_staff_email END,
+        routing_reason=? WHERE id=?
+    `).bind(newStatus,level,manager?.id||null,manager?.email||"",manager?.email||"",reason,item.id).run();
+    await env.DB.prepare(`
+      INSERT INTO flt_work_routing_events(work_item_id,event_type,from_staff_email,to_staff_email,reason,performed_by)
+      VALUES (?,?,?,?,?,?)
+    `).bind(item.id,eventType,item.assigned_staff_email||"",manager?.email||"",reason,performedBy).run();
+    escalated++;
+  }
+  return {checked:rows.results.length,warned,overdue,escalated};
 }
 
 async function managerRedirectWork(env, workItemId, targetStaffId, reason, staff) {
