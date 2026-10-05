@@ -2291,7 +2291,7 @@ async function routeQueuedWork(env, performedBy="FLTract Router") {
   return {assigned,held};
 }
 
-async function workRoutingPage(env, staff) {
+async function workRoutingPage(env, staff, notice="") {
   const activeStaff=await env.DB.prepare(`SELECT id,email,role FROM staff_users WHERE active=1 ORDER BY email`).all();
   const staffOptions=activeStaff.results.map(u=>`<option value="${u.id}">${esc(u.email||("Staff #"+u.id))} — ${esc(u.role||"Employee")}</option>`).join("");
   const items=await env.DB.prepare(`
@@ -2323,6 +2323,7 @@ async function workRoutingPage(env, staff) {
         <button type="submit">Redirect Work</button>
       </form>`:""}</td></tr>`).join(""):'<tr><td colspan="9" class="empty">No work items have been queued yet.</td></tr>';
   return page(`<h1>Universal Work Routing</h1>
+    ${notice?`<div class="panel" role="status">${esc(notice)}</div>`:""}
     <div class="panel"><h2>Routing Dashboard</h2>
     <p class="section-note">FLTract routes work only to active staff who satisfy the configured role and competency requirements. Training results can establish competency but never grant permissions.</p>
     <div class="management-grid">
@@ -3443,14 +3444,17 @@ if(request.method==="GET" && url.pathname==="/sops"){
 
 if(request.method==="GET" && url.pathname==="/work-routing"){
   if(!staff?.authenticated || !staff?.user?.active) return await denyAndAudit(env,staff,request,"View Work Routing");
-  return new Response(await workRoutingPage(env,staff),{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"}});
+  const count=key=>Math.max(0,Math.min(1000000,Number.parseInt(url.searchParams.get(key),10)||0));
+  const action=url.searchParams.get("completed");
+  const notice=action==="routing"?`Routing completed: ${count("assigned")} assigned; ${count("held")} escalated for management review.`:action==="deadlines"?`Deadline check completed: ${count("checked")} items checked; ${count("warned")} warnings; ${count("overdue")} overdue; ${count("escalated")} escalations.`:"";
+  return new Response(await workRoutingPage(env,staff,notice),{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"}});
 }
 
 if(request.method==="POST" && url.pathname==="/work-routing/check-deadlines"){
   if(!sameOriginPost(request)) return new Response("Invalid request origin.",{status:403});
   if(!trainingManagerAuthorized(staff)) return await denyAndAudit(env,staff,request,"Check Work Deadlines");
-  await checkWorkDeadlines(env,staff.email||"Authorized Manager");
-  return redirect("/work-routing");
+  const result=await checkWorkDeadlines(env,staff.email||"Authorized Manager");
+  return redirect(`/work-routing?completed=deadlines&checked=${result.checked}&warned=${result.warned}&overdue=${result.overdue}&escalated=${result.escalated}`);
 }
 
 if(request.method==="POST" && /^\/work-routing\/\d+\/redirect$/.test(url.pathname)){
@@ -3468,8 +3472,8 @@ if(request.method==="POST" && /^\/work-routing\/\d+\/redirect$/.test(url.pathnam
 if(request.method==="POST" && url.pathname==="/work-routing/run"){
   if(!sameOriginPost(request)) return new Response("Invalid request origin.",{status:403});
   if(!trainingManagerAuthorized(staff)) return await denyAndAudit(env,staff,request,"Run Work Routing");
-  await routeQueuedWork(env,staff.email||"Authorized Manager");
-  return redirect("/work-routing");
+  const result=await routeQueuedWork(env,staff.email||"Authorized Manager");
+  return redirect(`/work-routing?completed=routing&assigned=${result.assigned}&held=${result.held}`);
 }
 
 
