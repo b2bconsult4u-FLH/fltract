@@ -614,6 +614,63 @@ async function ensureClientSchema(env) {
       CREATE INDEX IF NOT EXISTS idx_work_routing_events_item
       ON flt_work_routing_events(work_item_id, created_at)
     `)
+,
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS flt_sop_definitions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sop_key TEXT NOT NULL,
+        module_key TEXT NOT NULL DEFAULT 'core',
+        name TEXT NOT NULL,
+        version INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL DEFAULT 'Draft',
+        target_roles_json TEXT NOT NULL DEFAULT '[]',
+        required_competencies_json TEXT NOT NULL DEFAULT '[]',
+        procedure_json TEXT NOT NULL DEFAULT '[]',
+        prohibited_actions_json TEXT NOT NULL DEFAULT '[]',
+        approval_rules_json TEXT NOT NULL DEFAULT '[]',
+        escalation_rules_json TEXT NOT NULL DEFAULT '[]',
+        training_impact TEXT NOT NULL DEFAULT 'None',
+        change_summary TEXT NOT NULL DEFAULT '',
+        created_by TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        published_at TEXT,
+        retired_at TEXT,
+        UNIQUE(sop_key, version)
+      )
+    `),
+    env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_sop_active
+      ON flt_sop_definitions(sop_key, status, version)
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS flt_sop_acknowledgements (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sop_id INTEGER NOT NULL,
+        staff_user_id INTEGER,
+        staff_email TEXT NOT NULL DEFAULT '',
+        acknowledgement_type TEXT NOT NULL DEFAULT 'Read',
+        acknowledged_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(sop_id, staff_email, acknowledgement_type)
+      )
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS flt_sop_training_requirements (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sop_id INTEGER NOT NULL,
+        staff_user_id INTEGER,
+        staff_email TEXT NOT NULL DEFAULT '',
+        role_at_assignment TEXT NOT NULL DEFAULT '',
+        requirement_type TEXT NOT NULL DEFAULT 'Retraining',
+        status TEXT NOT NULL DEFAULT 'Required',
+        reason TEXT NOT NULL DEFAULT '',
+        assigned_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        completed_at TEXT
+      )
+    `),
+    env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_sop_training_required
+      ON flt_sop_training_requirements(status, staff_email, assigned_at)
+    `)
   ]);
 
   clientSchemaReady = true;
