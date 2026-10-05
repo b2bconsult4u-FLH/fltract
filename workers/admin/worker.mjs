@@ -671,6 +671,35 @@ async function ensureClientSchema(env) {
       CREATE INDEX IF NOT EXISTS idx_sop_training_required
       ON flt_sop_training_requirements(status, staff_email, assigned_at)
     `)
+,
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS flt_audit_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_uuid TEXT NOT NULL UNIQUE,
+        occurred_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        actor_staff_user_id INTEGER,
+        actor_email TEXT NOT NULL DEFAULT '',
+        actor_role TEXT NOT NULL DEFAULT '',
+        action TEXT NOT NULL,
+        subject_type TEXT NOT NULL,
+        subject_id TEXT NOT NULL DEFAULT '',
+        outcome TEXT NOT NULL DEFAULT 'Success',
+        reason TEXT NOT NULL DEFAULT '',
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        request_method TEXT NOT NULL DEFAULT '',
+        request_path TEXT NOT NULL DEFAULT '',
+        previous_hash TEXT NOT NULL DEFAULT '',
+        event_hash TEXT NOT NULL
+      )
+    `),
+    env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_audit_subject
+      ON flt_audit_events(subject_type, subject_id, occurred_at)
+    `),
+    env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_audit_actor
+      ON flt_audit_events(actor_email, occurred_at)
+    `)
   ]);
 
   clientSchemaReady = true;
@@ -2865,6 +2894,55 @@ async function managerRedirectWork(env, workItemId, targetStaffId, reason, staff
     ) VALUES (?,?,?,?,?,?)
   `).bind(item.id,override?"Manager Override":"Manager Redirect",item.assigned_staff_email||"",
     target.email||"",auditReason,staff.email||"Authorized Manager").run();
+}
+
+function auditUuid() {
+  return crypto.randomUUID ? crypto.randomUUID() : `audit-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+async function sha256Hex(value) {
+  const bytes=new TextEncoder().encode(value);
+  const digest=await crypto.subtle.digest("SHA-256",bytes);
+  return Array.from(new Uint8Array(digest)).map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+async function appendAuditEvent(env,{staff,action,subjectType,subjectId="",outcome="Success",reason="",metadata={},request=null}) {
+  const prev=await env.DB.prepare(`SELECT event_hash FROM flt_audit_events ORDER BY id DESC LIMIT 1`).first();
+  const uuid=auditUuid(), occurredAt=new Date().toISOString(), previousHash=prev?.event_hash||"";
+  const actorEmail=staff?.email||"", actorRole=staff?.user?.role||staff?.role||"", actorId=staff?.user?.id||staff?.id||null;
+  const method=request?.method||"", path=request?new URL(request.url).pathname:"";
+  const metadataJson=JSON.stringify(metadata||{});
+  const canonical=[uuid,occurredAt,actorId||"",actorEmail,actorRole,action,subjectType,String(subjectId||""),outcome,reason,metadataJson,method,path,previousHash].join("|");
+  const eventHash=await sha256Hex(canonical);
+  await env.DB.prepare(`
+    INSERT INTO flt_audit_events(event_uuid,occurred_at,actor_staff_user_id,actor_email,actor_role,action,subject_type,subject_id,outcome,reason,metadata_json,request_method,request_path,previous_hash,event_hash)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  `).bind(uuid,occurredAt,actorId,actorEmail,actorRole,action,subjectType,String(subjectId||""),outcome,String(reason||"").slice(0,1000),metadataJson,method,path,previousHash,eventHash).run();
+  return uuid;
+}
+async function verifyAuditChain(env) {
+  const rows=await env.DB.prepare(`SELECT * FROM flt_audit_events ORDER BY id`).all();
+  let prev="";
+  for(const e of rows.results){
+    const canonical=[e.event_uuid,e.occurred_at,e.actor_staff_user_id||"",e.actor_email,e.actor_role,e.action,e.subject_type,e.subject_id,e.outcome,e.reason,e.metadata_json,e.request_method,e.request_path,prev].join("|");
+    const expected=await sha256Hex(canonical);
+    if(e.previous_hash!==prev || e.event_hash!==expected) return {valid:false,eventId:e.id};
+    prev=e.event_hash;
+  }
+  return {valid:true,count:rows.results.length};
+}
+function securityManagerAuthorized(staff) {
+  if(!staff?.authenticated || !staff?.user?.active) return false;
+  return ["admin","developer","ceo"].includes(String(staff.user.role||"").toLowerCase());
+}
+async function auditPage(env,staff) {
+  if(!securityManagerAuthorized(staff)) return null;
+  const integrity=await verifyAuditChain(env);
+  const events=await env.DB.prepare(`SELECT * FROM flt_audit_events ORDER BY id DESC LIMIT 200`).all();
+  const rows=events.results.map(e=>`<tr><td>${esc(e.occurred_at)}</td><td>${esc(e.actor_email||"System")}</td><td>${esc(e.actor_role)}</td><td>${esc(e.action)}</td><td>${esc(e.subject_type)} #${esc(e.subject_id)}</td><td>${esc(e.outcome)}</td><td>${esc(e.reason)}</td></tr>`).join("");
+  return page(`<h1>Security & Audit</h1>
+    <div class="panel"><h2>Append-Only Audit Chain</h2><p class="section-note">Each audit event is cryptographically chained to the event before it. This detects alteration or deletion inside the retained chain; it does not replace database backups or infrastructure security.</p>
+    <p><strong>Integrity:</strong> ${integrity.valid?`Verified — ${integrity.count} events`:`FAILED at event ${integrity.eventId}`}</p></div>
+    <div class="panel"><h2>Recent Consequential Actions</h2><table><thead><tr><th>Time</th><th>Actor</th><th>Role</th><th>Action</th><th>Subject</th><th>Outcome</th><th>Reason</th></tr></thead><tbody>${rows||'<tr><td colspan="7" class="empty">No audit events recorded yet.</td></tr>'}</tbody></table></div>
+  `,"Security & Audit | FLTract Admin");
 }
 
 function sopAppliesToRole(sop, role) {
