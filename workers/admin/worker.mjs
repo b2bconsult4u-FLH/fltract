@@ -466,6 +466,42 @@ async function ensureClientSchema(env) {
     env.DB.prepare(`
       CREATE INDEX IF NOT EXISTS idx_integrity_status
       ON flt_integrity_findings(status, severity, created_at)
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS flt_workflow_definitions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        workflow_key TEXT NOT NULL,
+        name TEXT NOT NULL,
+        version INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL DEFAULT 'Draft',
+        description TEXT NOT NULL DEFAULT '',
+        definition_json TEXT NOT NULL DEFAULT '{}',
+        created_by TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        activated_at TEXT,
+        UNIQUE(workflow_key, version)
+      )
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS flt_workflow_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        workflow_definition_id INTEGER NOT NULL,
+        mode TEXT NOT NULL DEFAULT 'DryRun',
+        status TEXT NOT NULL DEFAULT 'Completed',
+        subject_type TEXT NOT NULL DEFAULT '',
+        subject_id INTEGER,
+        initiated_by TEXT NOT NULL DEFAULT '',
+        input_json TEXT NOT NULL DEFAULT '{}',
+        proposed_effects_json TEXT NOT NULL DEFAULT '[]',
+        actual_effects_json TEXT NOT NULL DEFAULT '[]',
+        error_text TEXT NOT NULL DEFAULT '',
+        started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        completed_at TEXT
+      )
+    `),
+    env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_workflow_runs_mode
+      ON flt_workflow_runs(mode, started_at)
     `)
   ]);
 
