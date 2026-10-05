@@ -2357,6 +2357,109 @@ async function dryRunPage(env) {
   `, "Workflow Dry Run | FLTract Admin");
 }
 
+async function ensureStarterTrainingScenarios(env) {
+  const scenarios = [
+    ["RE-001","New Property Intake","Employee","Basic",
+      ["Verify client linkage","Recognize missing parcel ID","Request authoritative validation","Confirm mini-comp/research path","Route for review"],
+      ["verify-client","identify-missing-parcel","request-authoritative-validation","check-mini-comp","route-review"],
+      ["invent-parcel","bypass-review"]],
+    ["RE-002","Conflicting Parcel Information","Employee / Manager","Intermediate",
+      ["Recognize conflicting data","Preserve both values and provenance","Use Data Integrity review","Document resolution"],
+      ["identify-conflict","preserve-sources","create-integrity-review","document-resolution"],
+      ["silent-overwrite","resolve-without-evidence"]],
+    ["RE-003","Possible Duplicate Client","Employee","Basic",
+      ["Recognize duplicate signal","Compare records","Preserve both records","Escalate possible merge"],
+      ["recognize-duplicate","compare-records","preserve-records","escalate-merge"],
+      ["auto-merge","delete-record"]],
+    ["RE-004","Referral Approval","Manager","Intermediate",
+      ["Review recipient and message","Verify compliance status","Approve or return for correction"],
+      ["review-recipient","review-message","verify-compliance","approve-or-return"],
+      ["send-without-approval","ignore-contact-restriction"]],
+    ["RE-005","Mini-Comp Quality Review","Manager","Advanced",
+      ["Inspect provenance","Review comparable selection","Recognize insufficient data","Approve, reject or return"],
+      ["inspect-sources","review-comparables","assess-limitations","approve-reject-return"],
+      ["unsupported-valuation","remove-limitations"]]
+  ];
+  for (const sc of scenarios) {
+    await env.DB.prepare(`
+      INSERT OR IGNORE INTO flt_training_scenarios (
+        scenario_key,name,module_key,target_role,difficulty,version,status,description,
+        learning_objectives_json,expected_actions_json,prohibited_actions_json,
+        passing_score,created_by,published_at
+      ) VALUES (?,?,'real-estate',?,?,1,'Published',?,?,?,?,80,'FLTract Core',CURRENT_TIMESTAMP)
+    `).bind(sc[0],sc[1],sc[2],sc[3],
+      `Practice ${sc[1]} safely without changing production records.`,
+      JSON.stringify(sc[4]),JSON.stringify(sc[5]),JSON.stringify(sc[6])).run();
+  }
+}
+
+function scoreTrainingScenario(scenario, selectedActions) {
+  let expected=[]; let prohibited=[];
+  try { expected=JSON.parse(scenario.expected_actions_json || "[]"); } catch {}
+  try { prohibited=JSON.parse(scenario.prohibited_actions_json || "[]"); } catch {}
+  const selected = new Set(selectedActions);
+  const requiredDone = expected.filter(a => selected.has(a));
+  const prohibitedDone = prohibited.filter(a => selected.has(a));
+  const base = expected.length ? Math.round((requiredDone.length / expected.length) * 100) : 100;
+  const score = Math.max(0, base - prohibitedDone.length * 25);
+  const feedback = [];
+  for (const a of expected) if (!selected.has(a)) feedback.push({type:"Missing", action:a});
+  for (const a of prohibitedDone) feedback.push({type:"Prohibited", action:a});
+  if (!feedback.length) feedback.push({type:"Good", action:"All required actions completed without prohibited actions."});
+  return {score, feedback, passed:score >= Number(scenario.passing_score || 80) && prohibitedDone.length === 0};
+}
+
+async function trainingPage(env, staff) {
+  await ensureStarterTrainingScenarios(env);
+  const scenarios=await env.DB.prepare(`SELECT * FROM flt_training_scenarios WHERE status='Published' ORDER BY scenario_key`).all();
+  const sessions=await env.DB.prepare(`
+    SELECT s.*, t.scenario_key, t.name AS scenario_name
+    FROM flt_training_sessions s JOIN flt_training_scenarios t ON t.id=s.scenario_id
+    ORDER BY s.started_at DESC LIMIT 30
+  `).all();
+  const cards=scenarios.results.map(sc => {
+    let expected=[]; let prohibited=[]; try{expected=JSON.parse(sc.expected_actions_json||"[]");}catch{} try{prohibited=JSON.parse(sc.prohibited_actions_json||"[]");}catch{}
+    const options=[...expected.map(a=>[a,false]),...prohibited.map(a=>[a,true])].sort((a,b)=>a[0].localeCompare(b[0]));
+    return `<div class="panel"><h2>${esc(sc.scenario_key)} — ${esc(sc.name)}</h2>
+      <p><span class="badge">${esc(sc.target_role)}</span> <span class="badge muted">${esc(sc.difficulty)}</span></p>
+      <p class="section-note">${esc(sc.description)}</p>
+      <form method="post" action="/training/start">
+        <input type="hidden" name="scenario_id" value="${sc.id}">
+        <p><strong>Select the actions you would take:</strong></p>
+        ${options.map(o=>`<label style="margin:8px 0"><input style="width:auto" type="checkbox" name="actions" value="${esc(o[0])}"> ${esc(o[0].replaceAll("-"," "))}</label>`).join("")}
+        <button type="submit">Submit Training Exercise</button>
+      </form></div>`;
+  }).join("");
+  const rows=sessions.results.length?sessions.results.map(x=>`<tr><td>${esc(x.scenario_key)}</td><td>${esc(x.trainee_email||"Staff")}</td><td>${esc(x.score??"")}%</td><td><span class="badge ${x.status==="Passed"?"good":x.status==="Needs Review"?"warning":"danger"}">${esc(x.status)}</span></td><td>${esc(x.review_note||"")}</td></tr>`).join(""):'<tr><td colspan="5">No training sessions yet.</td></tr>';
+  return page(`<h1>Training Mode</h1>
+    <div class="panel"><h2>Safe Employee Training</h2><p class="section-note">Training exercises are isolated simulations. They cannot alter production clients, properties, reports, assignments, permissions, communications, or workflows. Passing training recommends readiness only; it never grants permissions automatically.</p></div>
+    ${cards}
+    <div class="panel"><h2>Training Results</h2><table><thead><tr><th>Scenario</th><th>Trainee</th><th>Score</th><th>Result</th><th>Manager Note</th></tr></thead><tbody>${rows}</tbody></table></div>
+  `,"Training Mode | FLTract Admin");
+}
+
+async function submitTrainingSession(env, scenarioId, selectedActions, staff) {
+  const scenario=await env.DB.prepare(`SELECT * FROM flt_training_scenarios WHERE id=? AND status='Published' LIMIT 1`).bind(scenarioId).first();
+  if(!scenario) throw new Error("Training scenario not found.");
+  const result=scoreTrainingScenario(scenario,selectedActions);
+  const status=result.passed?"Passed":"Needs Review";
+  const insert=await env.DB.prepare(`
+    INSERT INTO flt_training_sessions (
+      scenario_id,trainee_staff_user_id,trainee_email,scenario_version,status,
+      selected_actions_json,score,feedback_json,submitted_at
+    ) VALUES (?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+  `).bind(scenario.id,staff.user?.id||null,staff.email||"Authorized Staff",scenario.version,status,
+    JSON.stringify(selectedActions),result.score,JSON.stringify(result.feedback)).run();
+  if(result.passed){
+    await env.DB.prepare(`
+      INSERT INTO flt_training_competencies (
+        staff_user_id,staff_email,competency_key,module_key,scenario_id,scenario_version,result,score
+      ) VALUES (?,?,?,?,?,?,?,?)
+    `).bind(staff.user?.id||null,staff.email||"Authorized Staff",scenario.scenario_key,scenario.module_key,scenario.id,scenario.version,"Demonstrated",result.score).run();
+  }
+  return Number(insert?.meta?.last_row_id)||0;
+}
+
 async function detectIntegrityFindings(env) {
   await ensureClientSchema(env);
 
