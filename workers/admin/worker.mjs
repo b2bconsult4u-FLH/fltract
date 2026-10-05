@@ -2481,8 +2481,9 @@ async function auditPage(env,staff) {
 function sopAppliesToRole(sop, role) {
   let roles=[]; try{roles=JSON.parse(sop.target_roles_json||"[]");}catch{}
   if(!roles.length) return true;
-  const r=String(role||"Employee").toLowerCase();
-  return roles.some(x=>String(x).toLowerCase()===r || String(x).toLowerCase()==="all");
+  const normalizeRole=value=>{const name=String(value||"Employee").trim().toLowerCase();return name==="administrator"?"admin":name;};
+  const r=normalizeRole(role);
+  return roles.some(x=>normalizeRole(x)===r || normalizeRole(x)==="all");
 }
 
 async function ensureStarterSops(env) {
@@ -2521,10 +2522,11 @@ async function ensureStarterSops(env) {
 
 function roleSpecificSopSteps(sop, role) {
   let steps=[]; try{steps=JSON.parse(sop.procedure_json||"[]");}catch{}
-  const r=String(role||"Employee").toLowerCase();
+  const normalizeRole=value=>{const name=String(value||"Employee").trim().toLowerCase();return name==="administrator"?"admin":name;};
+  const r=normalizeRole(role);
   return steps.filter(step=>{
     const roles=Array.isArray(step.roles)?step.roles:[];
-    return !roles.length || roles.some(x=>String(x).toLowerCase()===r || String(x).toLowerCase()==="all");
+    return !roles.length || roles.some(x=>normalizeRole(x)===r || normalizeRole(x)==="all");
   });
 }
 
