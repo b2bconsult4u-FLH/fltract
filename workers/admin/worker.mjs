@@ -2931,6 +2931,15 @@ async function verifyAuditChain(env) {
   }
   return {valid:true,count:rows.results.length};
 }
+function integrityAuthorized(staff) {
+  if(!staff?.authenticated || !staff?.user?.active) return false;
+  return ["administrator","admin","developer","ceo","cfo","manager","mid-level manager"].includes(String(staff.user.role||"").toLowerCase());
+}
+function dryRunAuthorized(staff) { return integrityAuthorized(staff); }
+async function denyAndAudit(env,staff,request,action) {
+  try { await appendAuditEvent(env,{staff,action,subjectType:"Route",subjectId:new URL(request.url).pathname,outcome:"Denied",reason:"Role is not authorized for this operation.",request}); } catch {}
+  return new Response("Authorization required.",{status:403,headers:{"cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"}});
+}
 function securityManagerAuthorized(staff) {
   if(!staff?.authenticated || !staff?.user?.active) return false;
   return ["admin","developer","ceo"].includes(String(staff.user.role||"").toLowerCase());
@@ -3505,6 +3514,7 @@ if (request.method === "POST" && url.pathname === "/training/start") {
    ============================================================ */
 
 if (request.method === "GET" && url.pathname === "/dry-run") {
+  if(!dryRunAuthorized(staff)) return await denyAndAudit(env,staff,request,"View Dry Run");
   return new Response(await dryRunPage(env), {
     headers: {"content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"}
   });
@@ -3512,6 +3522,7 @@ if (request.method === "GET" && url.pathname === "/dry-run") {
 
 if (request.method === "POST" && url.pathname === "/dry-run") {
   if (!sameOriginPost(request)) return new Response("Invalid request origin.", {status:403});
+  if(!dryRunAuthorized(staff)) return await denyAndAudit(env,staff,request,"Execute Dry Run");
   const form = await request.formData();
   const workflowId = Number(form.get("workflow_id"));
   const subjectId = Number(form.get("subject_id"));
@@ -3526,6 +3537,7 @@ if (request.method === "POST" && url.pathname === "/dry-run") {
    ============================================================ */
 
 if (request.method === "GET" && url.pathname === "/integrity") {
+  if(!integrityAuthorized(staff)) return await denyAndAudit(env,staff,request,"View Data Integrity");
   return new Response(await integrityPage(env), {
     headers: {
       "content-type": "text/html; charset=utf-8",
@@ -3538,6 +3550,7 @@ if (request.method === "GET" && url.pathname === "/integrity") {
 
 if (request.method === "POST" && url.pathname === "/integrity/scan") {
   if (!sameOriginPost(request)) return new Response("Invalid request origin.", {status:403});
+  if(!integrityAuthorized(staff)) return await denyAndAudit(env,staff,request,"Run Data Integrity Scan");
   await detectIntegrityFindings(env);
   return redirect("/integrity");
 }
