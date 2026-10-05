@@ -2623,8 +2623,36 @@ async function routeQueuedWork(env, performedBy="FLTract Router") {
     candidates.sort((a,b)=>a.load-b.load || a.user.id-b.user.id);
     if(!candidates.length){
       held++;
-      await env.DB.prepare(`UPDATE flt_work_items SET routing_reason=? WHERE id=?`)
-        .bind("No active staff member currently satisfies the required role/competency.",item.id).run();
+      const managers=staff.results.filter(u=>roleCanReceiveWork(u.role,"Manager"));
+      const managerLoads=[];
+      for(const u of managers){
+        const load=await env.DB.prepare(`
+          SELECT COUNT(*) AS n FROM flt_work_items
+          WHERE assigned_staff_user_id=? AND status IN ('Assigned','In Progress','Escalated')
+        `).bind(u.id).first();
+        managerLoads.push({user:u,load:Number(load?.n||0)});
+      }
+      managerLoads.sort((a,b)=>a.load-b.load || a.user.id-b.user.id);
+      if(managerLoads.length){
+        const manager=managerLoads[0].user;
+        const reason="No active staff member satisfies the required role/competency. Immediately escalated to management for time-sensitive review.";
+        await env.DB.prepare(`
+          UPDATE flt_work_items SET status='Escalated',assigned_staff_user_id=?,assigned_staff_email=?,
+            routing_reason=?,assigned_at=CURRENT_TIMESTAMP WHERE id=? AND status='Queued'
+        `).bind(manager.id,manager.email||"",reason,item.id).run();
+        await env.DB.prepare(`
+          INSERT INTO flt_work_routing_events(work_item_id,event_type,to_staff_email,reason,performed_by)
+          VALUES (?,'Escalated',?,?,?)
+        `).bind(item.id,manager.email||"",reason,performedBy).run();
+      } else {
+        const reason="No eligible worker and no active manager available. CRITICAL UNASSIGNED ESCALATION.";
+        await env.DB.prepare(`UPDATE flt_work_items SET status='Escalation Required',routing_reason=? WHERE id=?`)
+          .bind(reason,item.id).run();
+        await env.DB.prepare(`
+          INSERT INTO flt_work_routing_events(work_item_id,event_type,reason,performed_by)
+          VALUES (?,'Escalation Required',?,?)
+        `).bind(item.id,reason,performedBy).run();
+      }
       continue;
     }
     const pick=candidates[0].user;
@@ -2652,7 +2680,8 @@ async function workRoutingPage(env, staff) {
     SELECT COUNT(*) total,
       SUM(CASE WHEN status='Queued' THEN 1 ELSE 0 END) queued,
       SUM(CASE WHEN status='Assigned' THEN 1 ELSE 0 END) assigned,
-      SUM(CASE WHEN status='In Progress' THEN 1 ELSE 0 END) in_progress
+      SUM(CASE WHEN status='In Progress' THEN 1 ELSE 0 END) in_progress,
+      SUM(CASE WHEN status IN ('Escalated','Escalation Required') THEN 1 ELSE 0 END) escalated
     FROM flt_work_items
   `).first();
   const rows=items.results.length?items.results.map(w=>`<tr>
@@ -2669,6 +2698,7 @@ async function workRoutingPage(env, staff) {
       <div class="management-card warning"><div class="label">Queued</div><div class="summary-number">${Number(counts?.queued||0)}</div></div>
       <div class="management-card"><div class="label">Assigned</div><div class="summary-number">${Number(counts?.assigned||0)}</div></div>
       <div class="management-card"><div class="label">In Progress</div><div class="summary-number">${Number(counts?.in_progress||0)}</div></div>
+      <div class="management-card warning"><div class="label">Escalated</div><div class="summary-number">${Number(counts?.escalated||0)}</div></div>
     </div>
     ${trainingManagerAuthorized(staff)?'<form method="post" action="/work-routing/run"><button type="submit">Route Queued Work</button></form>':""}
     </div>
