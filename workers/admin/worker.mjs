@@ -2074,6 +2074,7 @@ FL<span>TRACT</span> Admin
 <a href="/integrity">Data Integrity</a>
 <a href="/dry-run">Dry Run</a>
 <a href="/training">Training</a>
+${trainingManagerAuthorized(staff) ? '<a href="/training/manage">Training Management</a>' : ""}
 <a href="/export.csv">Export CSV</a>
 </nav>
 
@@ -2787,6 +2788,26 @@ Number(r.rule_value) || 90;
 }
 
 } catch {}
+
+
+/* ============================================================
+   TRAINING MANAGEMENT
+   ============================================================ */
+
+if (request.method === "GET" && url.pathname === "/training/manage") {
+  const html=await trainingManagerPage(env,staff);
+  if(!html) return new Response("Manager authorization required.",{status:403});
+  return new Response(html,{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"}});
+}
+
+if (request.method === "POST" && /^\/training\/session\/\d+\/review$/.test(url.pathname)) {
+  if(!sameOriginPost(request)) return new Response("Invalid request origin.",{status:403});
+  if(!trainingManagerAuthorized(staff)) return new Response("Manager authorization required.",{status:403});
+  const sessionId=Number(url.pathname.split("/")[3]);
+  const form=await request.formData();
+  await reviewTrainingSession(env,sessionId,String(form.get("decision")||""),String(form.get("review_note")||""),staff);
+  return redirect("/training/manage");
+}
 
 
 /* ============================================================
