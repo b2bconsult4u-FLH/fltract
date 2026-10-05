@@ -2316,6 +2316,29 @@ async function routeQueuedWork(env, performedBy="FLTract Router") {
   return {assigned,held};
 }
 
+function canActOnWork(staff, item) {
+  if(!staff?.authenticated || !staff?.user?.active) return false;
+  if(trainingManagerAuthorized(staff)) return true;
+  return item.assigned_staff_user_id != null
+    ? Number(item.assigned_staff_user_id) === Number(staff.user.id)
+    : !!item.assigned_staff_email && String(item.assigned_staff_email).toLowerCase() === String(staff.email||"").toLowerCase();
+}
+
+async function completeMiniCompResearchWork(env, reportId, reportStatus, performedBy) {
+  if(!["Ready for Review","Insufficient Data"].includes(reportStatus)) return;
+  const reason=reportStatus==="Ready for Review"
+    ? "Research preparation completed; report awaits separate human approval."
+    : "Research preparation ended with documented insufficient data; report is not approved.";
+  const predicate=`subject_type='mini_comp_queue' AND subject_id IN (SELECT id FROM mini_comp_queue WHERE report_id=?) AND status NOT IN ('Completed','Closed','Cancelled')`;
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO flt_work_routing_events(work_item_id,event_type,from_staff_email,reason,performed_by)
+      SELECT id,'Research Completed',assigned_staff_email,?,? FROM flt_work_items WHERE ${predicate}`)
+      .bind(reason,performedBy,reportId),
+    env.DB.prepare(`UPDATE flt_work_items SET status='Completed',completed_at=CURRENT_TIMESTAMP WHERE ${predicate}`)
+      .bind(reportId)
+  ]);
+}
+
 async function workRoutingPage(env, staff, notice="") {
   const activeStaff=await env.DB.prepare(`SELECT id,email,role FROM staff_users WHERE active=1 ORDER BY email`).all();
   const staffOptions=activeStaff.results.map(u=>`<option value="${u.id}">${esc(u.email||("Staff #"+u.id))} — ${esc(u.role||"Employee")}</option>`).join("");
@@ -2339,7 +2362,13 @@ async function workRoutingPage(env, staff, notice="") {
     <td>#${w.id}</td><td>${esc(w.title||w.work_type)}${Number(w.routing_property_id)>0?`<div style="margin-top:8px"><a href="/property/${Number(w.routing_property_id)}">Open Property Research</a><br><a href="/property/${Number(w.routing_property_id)}/mini-comp">Open Mini-Comp Workspace</a></div>`:""}</td><td>${esc(w.module_key)}</td>
     <td><span class="badge">${esc(w.priority)}</span></td><td>${esc(w.required_role)}</td>
     <td>${esc(w.required_competency||"None")}</td><td>${esc(w.assigned_staff_email||"Unassigned")}</td>
-    <td><span class="badge ${w.status==="Queued"?"warning":w.status==="Assigned"?"good":"muted"}">${esc(w.status)}</span></td>
+    <td><span class="badge ${w.status==="Queued"?"warning":w.status==="Assigned"?"good":"muted"}">${esc(w.status)}</span>
+    ${canActOnWork(staff,w)&&["Assigned","In Progress"].includes(w.status)?`
+      <form method="post" action="/work-routing/${w.id}/progress" style="margin-top:8px">
+        <input type="hidden" name="action" value="${w.status==="Assigned"?"start":"note"}">
+        <input name="note" maxlength="2000" placeholder="Progress note" ${w.status==="In Progress"?"required":""}>
+        <button type="submit">${w.status==="Assigned"?"Start Work":"Record Progress"}</button>
+      </form>`:""}</td>
     <td class="small">${esc(w.routing_reason||"")}${trainingManagerAuthorized(staff)&&["Escalated","Escalation Required","Assigned"].includes(w.status)?`
       <form method="post" action="/work-routing/${w.id}/redirect" style="margin-top:8px">
         <select name="target_staff_id" required>
@@ -3475,8 +3504,29 @@ if(request.method==="GET" && url.pathname==="/work-routing"){
   if(!staff?.authenticated || !staff?.user?.active) return await denyAndAudit(env,staff,request,"View Work Routing");
   const count=key=>Math.max(0,Math.min(1000000,Number.parseInt(url.searchParams.get(key),10)||0));
   const action=url.searchParams.get("completed");
-  const notice=action==="routing"?`Routing completed: ${count("assigned")} assigned; ${count("held")} escalated for management review.`:action==="deadlines"?`Deadline check completed: ${count("checked")} items checked; ${count("warned")} warnings; ${count("overdue")} overdue; ${count("escalated")} escalations.`:"";
+  const notice=action==="progress"?"Progress update processed. Current task state is shown below.":action==="routing"?`Routing completed: ${count("assigned")} assigned; ${count("held")} escalated for management review.`:action==="deadlines"?`Deadline check completed: ${count("checked")} items checked; ${count("warned")} warnings; ${count("overdue")} overdue; ${count("escalated")} escalations.`:"";
   return new Response(await workRoutingPage(env,staff,notice),{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"}});
+}
+
+if(request.method==="POST" && /^\/work-routing\/\d+\/progress$/.test(url.pathname)){
+  if(!sameOriginPost(request)) return new Response("Invalid request origin.",{status:403});
+  const item=await env.DB.prepare("SELECT * FROM flt_work_items WHERE id=?").bind(Number(url.pathname.split("/")[2])).first();
+  if(!item) return new Response("Work item not found.",{status:404});
+  if(!canActOnWork(staff,item)) return await denyAndAudit(env,staff,request,"Update Work Progress");
+  const form=await request.formData();
+  const action=String(form.get("action")||"");
+  const note=String(form.get("note")||"").trim().slice(0,2000);
+  if(!["start","note"].includes(action) || (action==="start" && item.status!=="Assigned") || (action==="note" && item.status!=="In Progress"))
+    return new Response("Work state changed or action is unavailable. Refresh Work Routing.",{status:409});
+  if(action==="note" && !note) return new Response("A progress note is required.",{status:400});
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO flt_work_routing_events(work_item_id,event_type,from_staff_email,reason,performed_by)
+      SELECT id,?,assigned_staff_email,?,? FROM flt_work_items WHERE id=? AND status=? AND assigned_staff_user_id IS ? AND assigned_staff_email=?`)
+      .bind(action==="start"?"Started":"Progress Note",note||"Assigned work started.",staff.email||"Authorized Staff",item.id,item.status,item.assigned_staff_user_id,item.assigned_staff_email),
+    env.DB.prepare(`UPDATE flt_work_items SET status=? WHERE id=? AND status=? AND assigned_staff_user_id IS ? AND assigned_staff_email=?`)
+      .bind(action==="start"?"In Progress":item.status,item.id,item.status,item.assigned_staff_user_id,item.assigned_staff_email)
+  ]);
+  return redirect("/work-routing?completed=progress");
 }
 
 if(request.method==="POST" && url.pathname==="/work-routing/check-deadlines"){
@@ -6852,6 +6902,7 @@ request.method === "POST" &&
       AND status IN ('Queued','Processing','Retry')
   `).bind(status, report.id).run();
 
+  await completeMiniCompResearchWork(env,report.id,status,staff.email||"Authorized Staff");
   await syncMiniCompLibraryStatus(env, propertyId, report.id);
 
   return redirect(`/property/${propertyId}/mini-comp`);
