@@ -2129,7 +2129,7 @@ async function submitTrainingSession(env, scenarioId, selectedActions, staff) {
 function trainingManagerAuthorized(staff) {
   if (!staff?.authenticated || !staff?.user?.active) return false;
   const role = String(staff.user.role || "").trim().toLowerCase();
-  return ["admin","developer","ceo","cfo","mid-level manager","manager"].includes(role);
+  return ["administrator","admin","developer","ceo","cfo","mid-level manager","manager"].includes(role);
 }
 
 async function trainingManagerPage(env, staff) {
