@@ -3452,7 +3452,7 @@ if(request.method==="POST" && url.pathname==="/work-routing/check-deadlines"){
 
 if(request.method==="POST" && /^\\/work-routing\\/\\d+\\/redirect$/.test(url.pathname)){
   if(!sameOriginPost(request)) return new Response("Invalid request origin.",{status:403});
-  if(!trainingManagerAuthorized(staff)) return new Response("Manager authorization required.",{status:403});
+  if(!trainingManagerAuthorized(staff)) return await denyAndAudit(env,staff,request,"Redirect Work Item");
   const workItemId=Number(url.pathname.split("/")[2]);
   const form=await request.formData();
   const targetStaffId=Number(form.get("target_staff_id"));
