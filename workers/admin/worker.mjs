@@ -2188,6 +2188,77 @@ return new Response(
 
 
 
+async function ensureStarterWorkflows(env) {
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO flt_workflow_definitions
+      (workflow_key, name, version, status, description, definition_json, created_by)
+    VALUES ('new-property-intake', 'New Property Intake', 1, 'Testing',
+      'Preview the standard property intake path without changing production records.',
+      ?, 'FLTract Core')
+  `).bind(JSON.stringify({
+    trigger: "Property intake received",
+    steps: [
+      "Validate required client and property fields",
+      "Create or link client account",
+      "Create property record",
+      "Validate parcel against authoritative source",
+      "Queue mini-comp research",
+      "Route for staff review"
+    ]
+  })).run();
+}
+
+async function buildDryRunEffects(env, workflow, subjectType, subjectId) {
+  const effects = [];
+  if (workflow.workflow_key !== "new-property-intake" || subjectType !== "Property") {
+    return [{action:"NO ACTION", target:subjectType || "No subject", detail:"No simulator is configured for this subject.", mutation:false}];
+  }
+
+  const p = await env.DB.prepare(`
+    SELECT p.*, c.first_name, c.last_name, c.email
+    FROM properties p
+    LEFT JOIN clients c ON c.id = p.client_id
+    WHERE p.id = ? LIMIT 1
+  `).bind(subjectId).first();
+  if (!p) throw new Error("Property not found.");
+
+  effects.push({action:"READ", target:`Property #${p.id}`, detail:"Load property and linked client context.", mutation:false});
+  effects.push({
+    action:String(p.parcel_id || "").trim() ? "VERIFY" : "VALIDATE",
+    target:String(p.parcel_id || "").trim() || `Property #${p.id}`,
+    detail:String(p.parcel_id || "").trim()
+      ? "Existing parcel ID would be checked against the configured authoritative source."
+      : "Parcel ID is missing; authoritative parcel validation would be requested.",
+    mutation:false
+  });
+
+  const report = await env.DB.prepare(`
+    SELECT id, status FROM mini_comp_reports WHERE property_id = ? LIMIT 1
+  `).bind(subjectId).first();
+  effects.push({
+    action:report ? "CHECK" : "CREATE",
+    target:"Mini-Comp",
+    detail:report ? `Existing mini-comp #${report.id} would be evaluated.` : "A mini-comp and research task would be created.",
+    mutation:!report
+  });
+  effects.push({action:"ROUTE", target:"Staff Review Queue", detail:"Routing rules would select an authorized staff queue.", mutation:true});
+  effects.push({action:"INTEGRITY CHECK", target:`Property #${p.id}`, detail:"Data Integrity rules would run before downstream automation.", mutation:false});
+  return effects;
+}
+
+async function executeDryRun(env, workflowId, subjectType, subjectId, initiatedBy) {
+  const workflow = await env.DB.prepare(`SELECT * FROM flt_workflow_definitions WHERE id = ? LIMIT 1`).bind(workflowId).first();
+  if (!workflow) throw new Error("Workflow not found.");
+  const effects = await buildDryRunEffects(env, workflow, subjectType, subjectId);
+  await env.DB.prepare(`
+    INSERT INTO flt_workflow_runs (
+      workflow_definition_id, mode, status, subject_type, subject_id, initiated_by,
+      input_json, proposed_effects_json, actual_effects_json, started_at, completed_at
+    ) VALUES (?, 'DryRun', 'Completed', ?, ?, ?, ?, ?, '[]', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+  `).bind(workflow.id, subjectType, subjectId, initiatedBy || "Authorized Staff",
+    JSON.stringify({subject_type:subjectType, subject_id:subjectId}), JSON.stringify(effects)).run();
+}
+
 async function detectIntegrityFindings(env) {
   await ensureClientSchema(env);
 
