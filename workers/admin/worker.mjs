@@ -503,6 +503,65 @@ async function ensureClientSchema(env) {
       CREATE INDEX IF NOT EXISTS idx_workflow_runs_mode
       ON flt_workflow_runs(mode, started_at)
     `)
+,
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS flt_training_scenarios (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        scenario_key TEXT NOT NULL,
+        name TEXT NOT NULL,
+        module_key TEXT NOT NULL DEFAULT 'core',
+        target_role TEXT NOT NULL DEFAULT 'Employee',
+        difficulty TEXT NOT NULL DEFAULT 'Basic',
+        version INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL DEFAULT 'Draft',
+        description TEXT NOT NULL DEFAULT '',
+        learning_objectives_json TEXT NOT NULL DEFAULT '[]',
+        expected_actions_json TEXT NOT NULL DEFAULT '[]',
+        prohibited_actions_json TEXT NOT NULL DEFAULT '[]',
+        passing_score INTEGER NOT NULL DEFAULT 80,
+        created_by TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        published_at TEXT,
+        UNIQUE(scenario_key, version)
+      )
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS flt_training_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        scenario_id INTEGER NOT NULL,
+        trainee_staff_user_id INTEGER,
+        trainee_email TEXT NOT NULL DEFAULT '',
+        scenario_version INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'In Progress',
+        selected_actions_json TEXT NOT NULL DEFAULT '[]',
+        score INTEGER,
+        feedback_json TEXT NOT NULL DEFAULT '[]',
+        started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        submitted_at TEXT,
+        reviewed_by TEXT NOT NULL DEFAULT '',
+        reviewed_at TEXT,
+        review_note TEXT NOT NULL DEFAULT ''
+      )
+    `),
+    env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_training_sessions_trainee
+      ON flt_training_sessions(trainee_email, started_at)
+    `),
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS flt_training_competencies (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        staff_user_id INTEGER,
+        staff_email TEXT NOT NULL DEFAULT '',
+        competency_key TEXT NOT NULL,
+        module_key TEXT NOT NULL DEFAULT 'core',
+        scenario_id INTEGER NOT NULL,
+        scenario_version INTEGER NOT NULL,
+        result TEXT NOT NULL,
+        score INTEGER,
+        demonstrated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        reviewed_by TEXT NOT NULL DEFAULT ''
+      )
+    `)
   ]);
 
   clientSchemaReady = true;
