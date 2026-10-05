@@ -2954,12 +2954,89 @@ async function sopPage(env, staff) {
       ${prohibited.length?`<h3>Prohibited Actions</h3><ul>${prohibited.map(x=>`<li>${esc(x)}</li>`).join("")}</ul>`:""}
       <p class="small">Training impact: ${esc(sop.training_impact)} · ${esc(sop.change_summary)}</p></div>`;
   }).join("");
-  const req=requirements.results.length?requirements.results.map(r=>`<tr><td>${esc(r.sop_key)}</td><td>${esc(r.name)} v${esc(r.version)}</td><td>${esc(r.requirement_type)}</td><td>${esc(r.reason)}</td><td><span class="badge warning">${esc(r.status)}</span></td></tr>`).join(""):'<tr><td colspan="5" class="empty">No SOP retraining requirements are pending.</td></tr>';
+  const req=requirements.results.length?requirements.results.map(r=>`<tr><td>${esc(r.sop_key)}</td><td>${esc(r.name)} v${esc(r.version)}</td><td>${esc(r.requirement_type)}</td><td>${esc(r.reason)}</td><td><span class="badge warning">${esc(r.status)}</span>${r.requirement_type==="Acknowledgement"?`<form method="post" action="/sops/requirement/${r.id}/acknowledge" style="margin-top:6px"><button type="submit">Acknowledge</button></form>`:""}</td></tr>`).join(""):'<tr><td colspan="5" class="empty">No SOP retraining requirements are pending.</td></tr>';
   return page(`<h1>Procedures & SOPs</h1>
     <div class="panel"><h2>Your Operating Procedures</h2><p class="section-note">SOP content is role-aware. Employees see the instructions they need to perform assigned work; managers see supervisory and override steps; executives see material escalation and policy responsibilities.</p></div>
     <div class="panel"><h2>Your Training Requirements</h2><table><thead><tr><th>SOP</th><th>Procedure</th><th>Requirement</th><th>Reason</th><th>Status</th></tr></thead><tbody>${req}</tbody></table></div>
     ${cards||'<div class="panel">No published procedures apply to this role.</div>'}
   `,"Procedures & SOPs | FLTract Admin");
+}
+
+async function sopManagementPage(env, staff) {
+  if(!trainingManagerAuthorized(staff)) return null;
+  await ensureStarterSops(env);
+  const sops=await env.DB.prepare(`
+    SELECT * FROM flt_sop_definitions ORDER BY sop_key,version DESC
+  `).all();
+  const rows=sops.results.map(x=>`<tr>
+    <td>${esc(x.sop_key)}</td><td>${esc(x.name)}</td><td>v${esc(x.version)}</td>
+    <td><span class="badge ${x.status==="Published"?"good":"muted"}">${esc(x.status)}</span></td>
+    <td>${esc(x.training_impact)}</td><td>${esc(x.change_summary||"")}</td>
+    <td>${x.status==="Published"?`<form method="post" action="/sops/${x.id}/new-version">
+      <select name="change_class" required><option value="Minor">Minor — acknowledgement</option><option value="Material">Material — retraining</option></select>
+      <input name="change_summary" maxlength="500" placeholder="What is changing?" required>
+      <button type="submit">Create Draft Revision</button></form>`:
+      `<form method="post" action="/sops/${x.id}/publish"><button type="submit">Publish v${esc(x.version)}</button></form>`}</td>
+  </tr>`).join("");
+  return page(`<h1>SOP Management</h1>
+    <div class="panel"><h2>Version Control</h2><p class="section-note">Published SOP versions remain immutable. A revision creates a new Draft version. Minor changes require acknowledgement; material changes create retraining obligations for affected active staff when published.</p></div>
+    <div class="panel"><table><thead><tr><th>Key</th><th>Procedure</th><th>Version</th><th>Status</th><th>Training Impact</th><th>Change</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table></div>
+  `,"SOP Management | FLTract Admin");
+}
+
+async function createSopRevision(env, sopId, changeClass, changeSummary, staff) {
+  if(!trainingManagerAuthorized(staff)) throw new Error("Manager authorization required.");
+  const source=await env.DB.prepare(`SELECT * FROM flt_sop_definitions WHERE id=? AND status='Published' LIMIT 1`).bind(sopId).first();
+  if(!source) throw new Error("Published SOP not found.");
+  const latest=await env.DB.prepare(`SELECT MAX(version) AS v FROM flt_sop_definitions WHERE sop_key=?`).bind(source.sop_key).first();
+  const version=Number(latest?.v||source.version)+1;
+  const impact=changeClass==="Material"?"Required":"Acknowledgement";
+  await env.DB.prepare(`
+    INSERT INTO flt_sop_definitions(
+      sop_key,module_key,name,version,status,target_roles_json,required_competencies_json,
+      procedure_json,prohibited_actions_json,approval_rules_json,escalation_rules_json,
+      training_impact,change_summary,created_by
+    ) VALUES (?,?,?,?, 'Draft',?,?,?,?,?,?,?,?,?)
+  `).bind(source.sop_key,source.module_key,source.name,version,source.target_roles_json,
+    source.required_competencies_json,source.procedure_json,source.prohibited_actions_json,
+    source.approval_rules_json,source.escalation_rules_json,impact,String(changeSummary||"").slice(0,500),
+    staff.email||"Authorized Manager").run();
+}
+
+async function publishSopRevision(env, sopId, staff) {
+  if(!trainingManagerAuthorized(staff)) throw new Error("Manager authorization required.");
+  const sop=await env.DB.prepare(`SELECT * FROM flt_sop_definitions WHERE id=? AND status='Draft' LIMIT 1`).bind(sopId).first();
+  if(!sop) throw new Error("Draft SOP not found.");
+  await env.DB.prepare(`UPDATE flt_sop_definitions SET status='Retired',retired_at=CURRENT_TIMESTAMP WHERE sop_key=? AND status='Published'`).bind(sop.sop_key).run();
+  await env.DB.prepare(`UPDATE flt_sop_definitions SET status='Published',published_at=CURRENT_TIMESTAMP WHERE id=?`).bind(sop.id).run();
+  const staffRows=await env.DB.prepare(`SELECT id,email,role FROM staff_users WHERE active=1`).all();
+  for(const u of staffRows.results){
+    if(!sopAppliesToRole(sop,u.role)) continue;
+    if(sop.training_impact==="Required"){
+      await env.DB.prepare(`
+        INSERT INTO flt_sop_training_requirements(sop_id,staff_user_id,staff_email,role_at_assignment,requirement_type,status,reason)
+        VALUES (?,?,?,?,'Retraining','Required',?)
+      `).bind(sop.id,u.id,u.email||"",u.role||"",sop.change_summary||"Material SOP revision").run();
+    } else if(sop.training_impact==="Acknowledgement"){
+      await env.DB.prepare(`
+        INSERT INTO flt_sop_training_requirements(sop_id,staff_user_id,staff_email,role_at_assignment,requirement_type,status,reason)
+        VALUES (?,?,?,?,'Acknowledgement','Required',?)
+      `).bind(sop.id,u.id,u.email||"",u.role||"",sop.change_summary||"SOP revision acknowledgement required").run();
+    }
+  }
+}
+
+async function acknowledgeSopRequirement(env, requirementId, staff) {
+  const req=await env.DB.prepare(`
+    SELECT * FROM flt_sop_training_requirements WHERE id=? AND LOWER(staff_email)=LOWER(?) AND status='Required' LIMIT 1
+  `).bind(requirementId,staff.email||"").first();
+  if(!req) throw new Error("SOP requirement not found.");
+  if(req.requirement_type!=="Acknowledgement") throw new Error("This requirement requires training and cannot be cleared by acknowledgement.");
+  await env.DB.prepare(`UPDATE flt_sop_training_requirements SET status='Completed',completed_at=CURRENT_TIMESTAMP WHERE id=?`).bind(req.id).run();
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO flt_sop_acknowledgements(sop_id,staff_user_id,staff_email,acknowledgement_type)
+    VALUES (?,?,?,'Read')
+  `).bind(req.sop_id,req.staff_user_id||null,staff.email||"").run();
 }
 
 async function detectIntegrityFindings(env) {
