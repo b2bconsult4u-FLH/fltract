@@ -2316,9 +2316,11 @@ async function workRoutingPage(env, staff, notice="") {
   const activeStaff=await env.DB.prepare(`SELECT id,email,role FROM staff_users WHERE active=1 ORDER BY email`).all();
   const staffOptions=activeStaff.results.map(u=>`<option value="${u.id}">${esc(u.email||("Staff #"+u.id))} — ${esc(u.role||"Employee")}</option>`).join("");
   const items=await env.DB.prepare(`
-    SELECT * FROM flt_work_items ORDER BY
-    CASE status WHEN 'Queued' THEN 0 WHEN 'Assigned' THEN 1 WHEN 'In Progress' THEN 2 ELSE 3 END,
-    created_at DESC LIMIT 150
+    SELECT w.*, q.property_id AS routing_property_id
+    FROM flt_work_items w
+    LEFT JOIN mini_comp_queue q ON w.subject_type='mini_comp_queue' AND w.subject_id=q.id
+    ORDER BY CASE w.status WHEN 'Queued' THEN 0 WHEN 'Assigned' THEN 1 WHEN 'In Progress' THEN 2 ELSE 3 END,
+    w.created_at DESC LIMIT 150
   `).all();
   const counts=await env.DB.prepare(`
     SELECT COUNT(*) total,
@@ -2330,7 +2332,7 @@ async function workRoutingPage(env, staff, notice="") {
     FROM flt_work_items
   `).first();
   const rows=items.results.length?items.results.map(w=>`<tr>
-    <td>#${w.id}</td><td>${esc(w.title||w.work_type)}</td><td>${esc(w.module_key)}</td>
+    <td>#${w.id}</td><td>${esc(w.title||w.work_type)}${Number(w.routing_property_id)>0?`<div style="margin-top:8px"><a href="/property/${Number(w.routing_property_id)}">Open Property Research</a><br><a href="/property/${Number(w.routing_property_id)}/mini-comp">Open Mini-Comp Workspace</a></div>`:""}</td><td>${esc(w.module_key)}</td>
     <td><span class="badge">${esc(w.priority)}</span></td><td>${esc(w.required_role)}</td>
     <td>${esc(w.required_competency||"None")}</td><td>${esc(w.assigned_staff_email||"Unassigned")}</td>
     <td><span class="badge ${w.status==="Queued"?"warning":w.status==="Assigned"?"good":"muted"}">${esc(w.status)}</span></td>
