@@ -3401,7 +3401,7 @@ if(request.method==="GET" && url.pathname==="/sops/manage"){
   return new Response(html,{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"}});
 }
 
-if(request.method==="POST" && /^\\/sops\\/\\d+\\/new-version$/.test(url.pathname)){
+if(request.method==="POST" && /^\/sops\/\d+\/new-version$/.test(url.pathname)){
   if(!sameOriginPost(request)) return new Response("Invalid request origin.",{status:403});
   if(!trainingManagerAuthorized(staff)) return new Response("Manager authorization required.",{status:403});
   const form=await request.formData();
@@ -3411,14 +3411,14 @@ if(request.method==="POST" && /^\\/sops\\/\\d+\\/new-version$/.test(url.pathname
   return redirect("/sops/manage");
 }
 
-if(request.method==="POST" && /^\\/sops\\/\\d+\\/publish$/.test(url.pathname)){
+if(request.method==="POST" && /^\/sops\/\d+\/publish$/.test(url.pathname)){
   if(!sameOriginPost(request)) return new Response("Invalid request origin.",{status:403});
   if(!trainingManagerAuthorized(staff)) return new Response("Manager authorization required.",{status:403});
   await publishSopRevision(env,Number(url.pathname.split("/")[2]),staff);
   return redirect("/sops/manage");
 }
 
-if(request.method==="POST" && /^\\/sops\\/requirement\\/\\d+\\/acknowledge$/.test(url.pathname)){
+if(request.method==="POST" && /^\/sops\/requirement\/\d+\/acknowledge$/.test(url.pathname)){
   if(!sameOriginPost(request)) return new Response("Invalid request origin.",{status:403});
   await acknowledgeSopRequirement(env,Number(url.pathname.split("/")[3]),staff);
   return redirect("/sops");
@@ -3450,7 +3450,7 @@ if(request.method==="POST" && url.pathname==="/work-routing/check-deadlines"){
   return redirect("/work-routing");
 }
 
-if(request.method==="POST" && /^\\/work-routing\\/\\d+\\/redirect$/.test(url.pathname)){
+if(request.method==="POST" && /^\/work-routing\/\d+\/redirect$/.test(url.pathname)){
   if(!sameOriginPost(request)) return new Response("Invalid request origin.",{status:403});
   if(!trainingManagerAuthorized(staff)) return await denyAndAudit(env,staff,request,"Redirect Work Item");
   const workItemId=Number(url.pathname.split("/")[2]);
