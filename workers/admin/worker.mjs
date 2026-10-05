@@ -440,6 +440,33 @@ async function ensureClientSchema(env) {
         UNIQUE(team_id, staff_user_id)
       )
     `)
+,
+    env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS flt_integrity_findings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        subject_type TEXT NOT NULL,
+        subject_id INTEGER NOT NULL,
+        finding_key TEXT NOT NULL,
+        finding_type TEXT NOT NULL,
+        severity TEXT NOT NULL DEFAULT 'Warning',
+        status TEXT NOT NULL DEFAULT 'Open',
+        summary TEXT NOT NULL DEFAULT '',
+        evidence_json TEXT NOT NULL DEFAULT '{}',
+        proposed_resolution TEXT NOT NULL DEFAULT '',
+        confidence REAL,
+        detected_by TEXT NOT NULL DEFAULT 'FLTract',
+        reviewed_by TEXT NOT NULL DEFAULT '',
+        review_note TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        reviewed_at TEXT,
+        UNIQUE(subject_type, subject_id, finding_key)
+      )
+    `),
+    env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_integrity_status
+      ON flt_integrity_findings(status, severity, created_at)
+    `)
   ]);
 
   clientSchemaReady = true;
@@ -1949,6 +1976,7 @@ FL<span>TRACT</span> Admin
 <nav>
 <a href="/">Inquiries</a>
 <a href="/followups">Follow Ups</a>
+<a href="/integrity">Data Integrity</a>
 <a href="/export.csv">Export CSV</a>
 </nav>
 
@@ -2123,6 +2151,206 @@ return new Response(
 }
 
 
+
+async function detectIntegrityFindings(env) {
+  await ensureClientSchema(env);
+
+  const properties = await env.DB.prepare(`
+    SELECT id, client_id, property_location, county, acreage, parcel_id,
+           legal_description, owner_name, data_source, data_verified_at
+    FROM properties
+    WHERE archived = 0
+  `).all();
+
+  const detected = [];
+
+  for (const p of properties.results) {
+    const checks = [];
+
+    if (!String(p.parcel_id || "").trim()) {
+      checks.push({
+        key: "missing-parcel-id",
+        type: "Missing Critical Data",
+        severity: "Warning",
+        summary: "Property does not yet have a verified parcel ID.",
+        resolution: "Validate against the appropriate authoritative property source and record the parcel ID.",
+        evidence: { field: "parcel_id", current: p.parcel_id || "" }
+      });
+    }
+
+    if (!String(p.owner_name || "").trim() && String(p.parcel_id || "").trim()) {
+      checks.push({
+        key: "missing-owner",
+        type: "Missing Critical Data",
+        severity: "Warning",
+        summary: "Parcel ID is present but owner name has not been recorded.",
+        resolution: "Verify current ownership from the authoritative source before relying on the record.",
+        evidence: { parcel_id: p.parcel_id }
+      });
+    }
+
+    if (!String(p.legal_description || "").trim() && String(p.parcel_id || "").trim()) {
+      checks.push({
+        key: "missing-legal-description",
+        type: "Missing Critical Data",
+        severity: "Info",
+        summary: "Parcel ID is present but legal description has not been recorded.",
+        resolution: "Acquire and retain the published legal description when available.",
+        evidence: { parcel_id: p.parcel_id }
+      });
+    }
+
+    if (String(p.data_source || "").trim() && !p.data_verified_at) {
+      checks.push({
+        key: "source-without-verification-time",
+        type: "Provenance Gap",
+        severity: "Info",
+        summary: "A property data source is recorded without a verification timestamp.",
+        resolution: "Record when the source was checked so future users can judge freshness.",
+        evidence: { data_source: p.data_source }
+      });
+    }
+
+    for (const c of checks) {
+      detected.push([p.id, c.key]);
+      await env.DB.prepare(`
+        INSERT INTO flt_integrity_findings (
+          subject_type, subject_id, finding_key, finding_type, severity,
+          status, summary, evidence_json, proposed_resolution, confidence,
+          detected_by, updated_at
+        )
+        VALUES ('Property', ?, ?, ?, ?, 'Open', ?, ?, ?, 1.0, 'Rule Engine', CURRENT_TIMESTAMP)
+        ON CONFLICT(subject_type, subject_id, finding_key) DO UPDATE SET
+          finding_type = excluded.finding_type,
+          severity = excluded.severity,
+          summary = excluded.summary,
+          evidence_json = excluded.evidence_json,
+          proposed_resolution = excluded.proposed_resolution,
+          updated_at = CURRENT_TIMESTAMP
+      `).bind(
+        p.id, c.key, c.type, c.severity, c.summary,
+        JSON.stringify(c.evidence), c.resolution
+      ).run();
+    }
+  }
+
+  const dupClients = await env.DB.prepare(`
+    SELECT normalized_phone, COUNT(*) AS n, GROUP_CONCAT(id) AS ids
+    FROM clients
+    WHERE normalized_phone <> ''
+    GROUP BY normalized_phone
+    HAVING COUNT(*) > 1
+  `).all();
+
+  for (const d of dupClients.results) {
+    const ids = String(d.ids || "").split(",").map(Number).filter(Boolean);
+    for (const id of ids) {
+      await env.DB.prepare(`
+        INSERT INTO flt_integrity_findings (
+          subject_type, subject_id, finding_key, finding_type, severity,
+          status, summary, evidence_json, proposed_resolution, confidence,
+          detected_by, updated_at
+        )
+        VALUES ('Client', ?, 'duplicate-phone', 'Possible Duplicate', 'Warning',
+          'Open', 'Another client record uses the same normalized phone number.',
+          ?, 'Review the matching client records before merging or changing either record.',
+          0.85, 'Rule Engine', CURRENT_TIMESTAMP)
+        ON CONFLICT(subject_type, subject_id, finding_key) DO UPDATE SET
+          evidence_json = excluded.evidence_json,
+          updated_at = CURRENT_TIMESTAMP
+      `).bind(id, JSON.stringify({ normalized_phone: d.normalized_phone, matching_client_ids: ids })).run();
+    }
+  }
+
+  const dupParcels = await env.DB.prepare(`
+    SELECT parcel_id, COUNT(*) AS n, GROUP_CONCAT(id) AS ids
+    FROM properties
+    WHERE archived = 0 AND TRIM(parcel_id) <> ''
+    GROUP BY LOWER(TRIM(parcel_id))
+    HAVING COUNT(*) > 1
+  `).all();
+
+  for (const d of dupParcels.results) {
+    const ids = String(d.ids || "").split(",").map(Number).filter(Boolean);
+    for (const id of ids) {
+      await env.DB.prepare(`
+        INSERT INTO flt_integrity_findings (
+          subject_type, subject_id, finding_key, finding_type, severity,
+          status, summary, evidence_json, proposed_resolution, confidence,
+          detected_by, updated_at
+        )
+        VALUES ('Property', ?, 'duplicate-parcel', 'Possible Duplicate', 'Critical',
+          'Open', 'The same parcel ID appears on more than one active property record.',
+          ?, 'Review the matching property records. Do not merge automatically.',
+          0.98, 'Rule Engine', CURRENT_TIMESTAMP)
+        ON CONFLICT(subject_type, subject_id, finding_key) DO UPDATE SET
+          evidence_json = excluded.evidence_json,
+          updated_at = CURRENT_TIMESTAMP
+      `).bind(id, JSON.stringify({ parcel_id: d.parcel_id, matching_property_ids: ids })).run();
+    }
+  }
+
+  return { properties_checked: properties.results.length };
+}
+
+async function integrityPage(env) {
+  const findings = await env.DB.prepare(`
+    SELECT *
+    FROM flt_integrity_findings
+    WHERE status = 'Open'
+    ORDER BY
+      CASE severity WHEN 'Critical' THEN 1 WHEN 'Warning' THEN 2 ELSE 3 END,
+      created_at DESC
+    LIMIT 250
+  `).all();
+
+  const counts = await env.DB.prepare(`
+    SELECT severity, COUNT(*) AS n
+    FROM flt_integrity_findings
+    WHERE status = 'Open'
+    GROUP BY severity
+  `).all();
+
+  const countMap = Object.fromEntries(counts.results.map(r => [r.severity, Number(r.n || 0)]));
+  const rows = findings.results.length ? findings.results.map(r => `
+    <tr>
+      <td><span class="badge ${r.severity === "Critical" ? "danger" : r.severity === "Warning" ? "warning" : "muted"}">${esc(r.severity)}</span></td>
+      <td>${esc(r.subject_type)} #${esc(r.subject_id)}</td>
+      <td><strong>${esc(r.finding_type)}</strong><div class="small">${esc(r.summary)}</div></td>
+      <td>${esc(r.proposed_resolution)}</td>
+      <td>
+        <form method="post" action="/integrity/${r.id}/review" class="action-row">
+          <select name="decision" required>
+            <option value="">Decision...</option>
+            <option value="Resolved">Resolved</option>
+            <option value="Accepted">Accept As-Is</option>
+            <option value="Dismissed">Dismiss</option>
+          </select>
+          <input name="note" maxlength="500" placeholder="Review note">
+          <button type="submit">Save Review</button>
+        </form>
+      </td>
+    </tr>`).join("") : '<tr><td colspan="5" class="empty">No open integrity findings.</td></tr>';
+
+  return page(`
+    <h1>Data Integrity</h1>
+    <div class="panel">
+      <div class="management-grid">
+        <div class="management-card danger"><div class="label">Critical</div><div class="summary-number">${countMap.Critical || 0}</div></div>
+        <div class="management-card warning"><div class="label">Warning</div><div class="summary-number">${countMap.Warning || 0}</div></div>
+        <div class="management-card muted"><div class="label">Info</div><div class="summary-number">${countMap.Info || 0}</div></div>
+      </div>
+      <p class="section-note">FLTract flags possible problems for human review. It does not silently merge or overwrite material business data.</p>
+      <form method="post" action="/integrity/scan"><button type="submit">Run Integrity Scan</button></form>
+    </div>
+    <div class="panel">
+      <h2>Open Review Queue</h2>
+      <table><thead><tr><th>Severity</th><th>Record</th><th>Finding</th><th>Recommended Action</th><th>Review</th></tr></thead><tbody>${rows}</tbody></table>
+    </div>
+  `, "Data Integrity | FLTract Admin");
+}
+
+
 const staff = await staffContext(env, request);
 
 /*
@@ -2170,6 +2398,46 @@ Number(r.rule_value) || 90;
 }
 
 } catch {}
+
+
+/* ============================================================
+   DATA INTEGRITY ENGINE
+   ============================================================ */
+
+if (request.method === "GET" && url.pathname === "/integrity") {
+  return new Response(await integrityPage(env), {
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "no-referrer"
+    }
+  });
+}
+
+if (request.method === "POST" && url.pathname === "/integrity/scan") {
+  if (!sameOriginPost(request)) return new Response("Invalid request origin.", {status:403});
+  await detectIntegrityFindings(env);
+  return redirect("/integrity");
+}
+
+if (request.method === "POST" && /^\/integrity\/\d+\/review$/.test(url.pathname)) {
+  if (!sameOriginPost(request)) return new Response("Invalid request origin.", {status:403});
+  const id = Number(url.pathname.split("/")[2]);
+  const form = await request.formData();
+  const decision = String(form.get("decision") || "");
+  const note = String(form.get("note") || "").trim().slice(0,500);
+  if (!["Resolved","Accepted","Dismissed"].includes(decision)) {
+    return new Response("Invalid integrity review decision.", {status:400});
+  }
+  await env.DB.prepare(`
+    UPDATE flt_integrity_findings
+    SET status = ?, review_note = ?, reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).bind(decision, note, staff.email || "Authorized Staff", id).run();
+  return redirect("/integrity");
+}
 
 
 /* ============================================================
