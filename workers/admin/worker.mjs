@@ -1059,6 +1059,10 @@ function median(values) {
     : (nums[middle - 1] + nums[middle]) / 2;
 }
 
+function miniCompMoney(value) {
+  return value == null || value === "" ? "No data" : money(value);
+}
+
 function miniCompMetrics(comps) {
   const usable = comps.filter(c =>
     Number.isFinite(Number(c.sale_price)) &&
@@ -7048,8 +7052,8 @@ ${!isApproved ? '<p class="section-note"><strong>DRAFT — INTERNAL REVIEW ONLY.
 <h2>Comparable Sale Summary</h2>
 <div class="summary-grid">
 <div class="summary-card"><div class="label">Sales Reviewed</div><div class="summary-number">${metrics.total}</div></div>
-<div class="summary-card"><div class="label">Median Sale Price</div><div class="summary-number">${esc(money(metrics.medianPrice))}</div></div>
-<div class="summary-card"><div class="label">Median Price / Acre</div><div class="summary-number">${esc(money(metrics.medianPerAcre))}</div></div>
+<div class="summary-card"><div class="label">Median Sale Price</div><div class="summary-number">${esc(miniCompMoney(metrics.medianPrice))}</div></div>
+<div class="summary-card"><div class="label">Median Price / Acre</div><div class="summary-number">${esc(miniCompMoney(metrics.medianPerAcre))}</div></div>
 </div>
 <table>
 <thead><tr><th>#</th><th>Comparable</th><th>Sale Date</th><th>Sale Price</th><th>Acres</th><th>Price/Acre</th><th>Qualified</th><th>Selection Reason</th></tr></thead>
@@ -7189,8 +7193,8 @@ These figures are descriptive calculations from the recorded comparable sales. T
 </p>
 <div class="summary-grid">
 <div class="summary-card"><div class="label">Comparables</div><div class="summary-number">${metrics.total}</div><div class="small">${qualifiedCount} marked qualified</div></div>
-<div class="summary-card"><div class="label">Median Sale Price</div><div class="summary-number">${esc(money(metrics.medianPrice))}</div><div class="small">Low ${esc(money(metrics.lowPrice))} · High ${esc(money(metrics.highPrice))}</div></div>
-<div class="summary-card"><div class="label">Median Price / Acre</div><div class="summary-number">${esc(money(metrics.medianPerAcre))}</div><div class="small">Average ${esc(money(metrics.averagePerAcre))}</div></div>
+<div class="summary-card"><div class="label">Median Sale Price</div><div class="summary-number">${esc(miniCompMoney(metrics.medianPrice))}</div><div class="small">Low ${esc(miniCompMoney(metrics.lowPrice))} · High ${esc(miniCompMoney(metrics.highPrice))}</div></div>
+<div class="summary-card"><div class="label">Median Price / Acre</div><div class="summary-number">${esc(miniCompMoney(metrics.medianPerAcre))}</div><div class="small">Average ${esc(miniCompMoney(metrics.averagePerAcre))}</div></div>
 </div>
 </div>
 
@@ -7270,7 +7274,7 @@ ${approvalReady
   : "Not ready: complete subject verification and at least three qualified comparable sales."}
 </div>
 <form method="post" action="/property/${propertyId}/mini-comp/approve" style="margin-top:14px">
-<button type="submit" ${approvalReady ? "" : "disabled"}>Approve Mini-Comp</button>
+<button type="submit" ${approvalReady ? "" : 'disabled aria-disabled="true" style="background:#686868;color:#fff;cursor:not-allowed"'}>${approvalReady ? "Approve Mini-Comp" : "Approval unavailable — requirements incomplete"}</button>
 </form>
 </div>
 
@@ -7503,8 +7507,8 @@ PRESERVED APPROVED VERSION. This snapshot is retained for audit and report histo
 <h2>Comparable Summary</h2>
 <div class="summary-grid">
 <div class="summary-card"><div class="label">Sales</div><div class="summary-number">${metrics.total}</div></div>
-<div class="summary-card"><div class="label">Median Sale Price</div><div class="summary-number">${esc(money(metrics.medianPrice))}</div></div>
-<div class="summary-card"><div class="label">Median Price / Acre</div><div class="summary-number">${esc(money(metrics.medianPerAcre))}</div></div>
+<div class="summary-card"><div class="label">Median Sale Price</div><div class="summary-number">${esc(miniCompMoney(metrics.medianPrice))}</div></div>
+<div class="summary-card"><div class="label">Median Price / Acre</div><div class="summary-number">${esc(miniCompMoney(metrics.medianPerAcre))}</div></div>
 </div>
 <table>
 <thead><tr><th>#</th><th>Comparable</th><th>Sale Date</th><th>Sale Price</th><th>Acres</th><th>Price/Acre</th><th>Qualified</th><th>Source</th></tr></thead>
