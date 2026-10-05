@@ -1776,484 +1776,6 @@ function textContactStatus(inquiry) {
    PAGE TEMPLATE
    ============================================================ */
 
-function page(body, title = "FLTract Admin") {
-  return `<!doctype html>
-<html lang="en">
-
-<head>
-
-<meta charset="utf-8">
-
-<meta
-  name="viewport"
-  content="width=device-width,initial-scale=1"
->
-
-<title>${esc(title)}</title>
-
-<style>
-
-:root{
-  --ink:#17352b;
-  --green:#245943;
-  --sand:#f4efe4;
-  --paper:#fffdf8;
-  --gold:#b98b3e;
-  --muted:#65736d;
-  --danger:#8b1e1e;
-  --warning:#8a5a00;
-  --good:#1f6b3a;
-}
-
-*{
-  box-sizing:border-box;
-}
-
-body{
-  margin:0;
-  font-family:Arial,Helvetica,sans-serif;
-  background:var(--sand);
-  color:#1e2925;
-}
-
-header{
-  background:var(--ink);
-  color:#fff;
-  padding:18px 0;
-}
-
-.wrap{
-  width:min(1180px,94%);
-  margin:auto;
-}
-
-header .wrap{
-  display:flex;
-  justify-content:space-between;
-  align-items:center;
-  gap:20px;
-}
-
-.brand{
-  font-size:1.5rem;
-  font-weight:900;
-}
-
-.brand span{
-  color:#e4c98d;
-}
-
-nav a{
-  color:#fff;
-  text-decoration:none;
-  margin-left:16px;
-  font-weight:700;
-}
-
-main{
-  padding:36px 0 60px;
-}
-
-h1,
-h2,
-h3{
-  color:var(--ink);
-}
-
-.panel{
-  background:#fff;
-  border:1px solid #d8d8d2;
-  padding:24px;
-  margin-bottom:22px;
-  box-shadow:0 4px 14px #0000000a;
-}
-
-.filters,
-.action-row{
-  display:flex;
-  gap:12px;
-  flex-wrap:wrap;
-  align-items:end;
-}
-
-.filters{
-  margin-bottom:20px;
-}
-
-input,
-select,
-textarea,
-button{
-  font:inherit;
-}
-
-input,
-select,
-textarea{
-  width:100%;
-  padding:10px 12px;
-  border:1px solid #adb7b1;
-  border-radius:4px;
-  background:#fff;
-}
-
-textarea{
-  resize:vertical;
-}
-
-button{
-  background:var(--ink);
-  color:#fff;
-  border:0;
-  border-radius:4px;
-  padding:11px 16px;
-  font-weight:800;
-  cursor:pointer;
-}
-
-button.secondary{
-  background:#65736d;
-}
-
-.filters input{
-  width:260px;
-}
-
-.filters select{
-  width:210px;
-}
-
-table{
-  width:100%;
-  border-collapse:collapse;
-}
-
-th,
-td{
-  text-align:left;
-  padding:12px;
-  border-bottom:1px solid #e3e0d8;
-  vertical-align:top;
-}
-
-th{
-  background:#faf6ec;
-  color:var(--ink);
-}
-
-a{
-  color:var(--green);
-}
-
-.badge{
-  display:inline-block;
-  padding:5px 9px;
-  border-radius:20px;
-  background:#eef3ef;
-  font-size:.82rem;
-  font-weight:800;
-}
-
-.badge.good{
-  background:#e6f4ea;
-  color:var(--good);
-}
-
-.badge.warning{
-  background:#fff2cf;
-  color:var(--warning);
-}
-
-.badge.danger{
-  background:#fde8e8;
-  color:var(--danger);
-}
-
-.badge.muted{
-  background:#ecefed;
-  color:#57615d;
-}
-
-.compliance-signals{
-  display:flex;
-  flex-wrap:wrap;
-  gap:12px;
-  margin:10px 0 22px;
-}
-
-.signal{
-  display:flex;
-  align-items:center;
-  gap:8px;
-  padding:9px 12px;
-  border:1px solid #d8d8d2;
-  border-radius:8px;
-  background:#fff;
-  font-weight:800;
-}
-
-.signal-light{
-  font-size:1.45rem;
-  line-height:1;
-}
-
-.signal-light.good{color:var(--good);}
-.signal-light.warning{color:var(--gold);}
-.signal-light.danger{color:var(--danger);}
-.signal-light.muted{color:#7a827e;}
-
-.history-collapse{
-  margin-top:24px;
-  border:1px solid #d8d8d2;
-  background:#fff;
-}
-
-.history-collapse summary{
-  cursor:pointer;
-  padding:18px 20px;
-  font-size:1.25rem;
-  font-weight:900;
-  color:var(--ink);
-  list-style-position:inside;
-}
-
-.history-collapse[open] summary{
-  border-bottom:1px solid #e3e0d8;
-}
-
-.history-collapse-body{
-  padding:18px;
-}
-
-.grid{
-  display:grid;
-  grid-template-columns:1fr 1fr;
-  gap:18px;
-}
-
-.form-grid{
-  display:grid;
-  grid-template-columns:1fr 1fr;
-  gap:16px;
-}
-
-.form-grid .full{
-  grid-column:1/-1;
-}
-
-label{
-  display:block;
-  font-weight:700;
-  color:var(--ink);
-}
-
-label span{
-  display:block;
-  margin-bottom:5px;
-}
-
-.label{
-  color:var(--muted);
-  font-size:.82rem;
-  font-weight:800;
-  text-transform:uppercase;
-  letter-spacing:.04em;
-}
-
-.value{
-  margin-top:3px;
-}
-
-.empty{
-  padding:30px;
-  text-align:center;
-  color:var(--muted);
-}
-
-.back{
-  display:inline-block;
-  margin-bottom:18px;
-  font-weight:700;
-}
-
-.note{
-  white-space:pre-wrap;
-}
-
-.small{
-  font-size:.88rem;
-  color:var(--muted);
-}
-
-.section-note{
-  font-size:.9rem;
-  color:var(--muted);
-  line-height:1.5;
-}
-
-.followup-overdue{
-  border-left:5px solid var(--danger);
-}
-
-.followup-today{
-  border-left:5px solid var(--gold);
-}
-
-.followup-future{
-  border-left:5px solid var(--green);
-}
-
-.summary-grid{
-  display:grid;
-  grid-template-columns:repeat(3,1fr);
-  gap:16px;
-  margin-bottom:22px;
-}
-
-.summary-card{
-  background:#fff;
-  border:1px solid #d8d8d2;
-  padding:18px;
-}
-
-.summary-number{
-  font-size:2rem;
-  font-weight:900;
-  color:var(--ink);
-}
-
-.management-grid{
-  display:grid;
-  grid-template-columns:repeat(3,1fr);
-  gap:14px;
-  margin-bottom:22px;
-}
-
-.management-card{
-  display:block;
-  background:#fff;
-  border:1px solid #d8d8d2;
-  border-left:5px solid var(--green);
-  padding:16px 18px;
-  text-decoration:none;
-  color:inherit;
-}
-
-.management-card:hover{
-  border-color:var(--ink);
-}
-
-.management-card.warning{
-  border-left-color:var(--gold);
-}
-
-.management-card.danger{
-  border-left-color:var(--danger);
-}
-
-.management-card.muted{
-  border-left-color:#7a827e;
-}
-
-.management-card .summary-number{
-  margin-top:4px;
-}
-
-.management-card .small{
-  margin-top:6px;
-}
-
-@media(max-width:760px){
-
-  .grid,
-  .form-grid,
-  .summary-grid,
-  .management-grid{
-    grid-template-columns:1fr;
-  }
-
-  .form-grid .full{
-    grid-column:auto;
-  }
-
-  table{
-    font-size:.88rem;
-  }
-
-  th,
-  td{
-    padding:8px;
-  }
-
-  .filters input,
-  .filters select{
-    width:100%;
-  }
-
-}
-
-</style>
-
-</head>
-
-<body>
-
-<header>
-
-<div class="wrap">
-
-<div class="brand">
-FL<span>TRACT</span> Admin
-</div>
-
-<nav>
-<a href="/">Inquiries</a>
-<a href="/followups">Follow Ups</a>
-<a href="/integrity">Data Integrity</a>
-<a href="/dry-run">Dry Run</a>
-<a href="/sops">Procedures</a>
-${trainingManagerAuthorized(staff) ? '<a href="/sops/manage">SOP Management</a>' : ""}
-        ${securityManagerAuthorized(staff) ? '<a href="/security-audit">Security & Audit</a>' : ""}
-<a href="/training">Training</a>
-<a href="/work-routing">Work Routing</a>
-${trainingManagerAuthorized(staff) ? '<a href="/training/manage">Training Management</a>' : ""}
-<a href="/export.csv">Export CSV</a>
-</nav>
-
-</div>
-
-</header>
-
-<main>
-
-<div class="wrap">
-
-${body}
-
-</div>
-
-</main>
-
-<script>
-function setFollowupDate(id, days) {
-  const input = document.getElementById(id);
-  if (!input) return;
-  const date = new Date();
-  date.setHours(12,0,0,0);
-  date.setDate(date.getDate() + Number(days || 0));
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
-  input.value = y + "-" + m + "-" + d;
-}
-</script>
-
-</body>
-
-</html>`;
-}
-
-
 /* ============================================================
    DAILY FOLLOW-UP REMINDER
    ============================================================ */
@@ -3328,6 +2850,485 @@ async function integrityPage(env) {
     </div>
   `, "Data Integrity | FLTract Admin");
 }
+
+
+function page(body, title = "FLTract Admin") {
+  return `<!doctype html>
+<html lang="en">
+
+<head>
+
+<meta charset="utf-8">
+
+<meta
+  name="viewport"
+  content="width=device-width,initial-scale=1"
+>
+
+<title>${esc(title)}</title>
+
+<style>
+
+:root{
+  --ink:#17352b;
+  --green:#245943;
+  --sand:#f4efe4;
+  --paper:#fffdf8;
+  --gold:#b98b3e;
+  --muted:#65736d;
+  --danger:#8b1e1e;
+  --warning:#8a5a00;
+  --good:#1f6b3a;
+}
+
+*{
+  box-sizing:border-box;
+}
+
+body{
+  margin:0;
+  font-family:Arial,Helvetica,sans-serif;
+  background:var(--sand);
+  color:#1e2925;
+}
+
+header{
+  background:var(--ink);
+  color:#fff;
+  padding:18px 0;
+}
+
+.wrap{
+  width:min(1180px,94%);
+  margin:auto;
+}
+
+header .wrap{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:20px;
+}
+
+.brand{
+  font-size:1.5rem;
+  font-weight:900;
+}
+
+.brand span{
+  color:#e4c98d;
+}
+
+nav a{
+  color:#fff;
+  text-decoration:none;
+  margin-left:16px;
+  font-weight:700;
+}
+
+main{
+  padding:36px 0 60px;
+}
+
+h1,
+h2,
+h3{
+  color:var(--ink);
+}
+
+.panel{
+  background:#fff;
+  border:1px solid #d8d8d2;
+  padding:24px;
+  margin-bottom:22px;
+  box-shadow:0 4px 14px #0000000a;
+}
+
+.filters,
+.action-row{
+  display:flex;
+  gap:12px;
+  flex-wrap:wrap;
+  align-items:end;
+}
+
+.filters{
+  margin-bottom:20px;
+}
+
+input,
+select,
+textarea,
+button{
+  font:inherit;
+}
+
+input,
+select,
+textarea{
+  width:100%;
+  padding:10px 12px;
+  border:1px solid #adb7b1;
+  border-radius:4px;
+  background:#fff;
+}
+
+textarea{
+  resize:vertical;
+}
+
+button{
+  background:var(--ink);
+  color:#fff;
+  border:0;
+  border-radius:4px;
+  padding:11px 16px;
+  font-weight:800;
+  cursor:pointer;
+}
+
+button.secondary{
+  background:#65736d;
+}
+
+.filters input{
+  width:260px;
+}
+
+.filters select{
+  width:210px;
+}
+
+table{
+  width:100%;
+  border-collapse:collapse;
+}
+
+th,
+td{
+  text-align:left;
+  padding:12px;
+  border-bottom:1px solid #e3e0d8;
+  vertical-align:top;
+}
+
+th{
+  background:#faf6ec;
+  color:var(--ink);
+}
+
+a{
+  color:var(--green);
+}
+
+.badge{
+  display:inline-block;
+  padding:5px 9px;
+  border-radius:20px;
+  background:#eef3ef;
+  font-size:.82rem;
+  font-weight:800;
+}
+
+.badge.good{
+  background:#e6f4ea;
+  color:var(--good);
+}
+
+.badge.warning{
+  background:#fff2cf;
+  color:var(--warning);
+}
+
+.badge.danger{
+  background:#fde8e8;
+  color:var(--danger);
+}
+
+.badge.muted{
+  background:#ecefed;
+  color:#57615d;
+}
+
+.compliance-signals{
+  display:flex;
+  flex-wrap:wrap;
+  gap:12px;
+  margin:10px 0 22px;
+}
+
+.signal{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:9px 12px;
+  border:1px solid #d8d8d2;
+  border-radius:8px;
+  background:#fff;
+  font-weight:800;
+}
+
+.signal-light{
+  font-size:1.45rem;
+  line-height:1;
+}
+
+.signal-light.good{color:var(--good);}
+.signal-light.warning{color:var(--gold);}
+.signal-light.danger{color:var(--danger);}
+.signal-light.muted{color:#7a827e;}
+
+.history-collapse{
+  margin-top:24px;
+  border:1px solid #d8d8d2;
+  background:#fff;
+}
+
+.history-collapse summary{
+  cursor:pointer;
+  padding:18px 20px;
+  font-size:1.25rem;
+  font-weight:900;
+  color:var(--ink);
+  list-style-position:inside;
+}
+
+.history-collapse[open] summary{
+  border-bottom:1px solid #e3e0d8;
+}
+
+.history-collapse-body{
+  padding:18px;
+}
+
+.grid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:18px;
+}
+
+.form-grid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:16px;
+}
+
+.form-grid .full{
+  grid-column:1/-1;
+}
+
+label{
+  display:block;
+  font-weight:700;
+  color:var(--ink);
+}
+
+label span{
+  display:block;
+  margin-bottom:5px;
+}
+
+.label{
+  color:var(--muted);
+  font-size:.82rem;
+  font-weight:800;
+  text-transform:uppercase;
+  letter-spacing:.04em;
+}
+
+.value{
+  margin-top:3px;
+}
+
+.empty{
+  padding:30px;
+  text-align:center;
+  color:var(--muted);
+}
+
+.back{
+  display:inline-block;
+  margin-bottom:18px;
+  font-weight:700;
+}
+
+.note{
+  white-space:pre-wrap;
+}
+
+.small{
+  font-size:.88rem;
+  color:var(--muted);
+}
+
+.section-note{
+  font-size:.9rem;
+  color:var(--muted);
+  line-height:1.5;
+}
+
+.followup-overdue{
+  border-left:5px solid var(--danger);
+}
+
+.followup-today{
+  border-left:5px solid var(--gold);
+}
+
+.followup-future{
+  border-left:5px solid var(--green);
+}
+
+.summary-grid{
+  display:grid;
+  grid-template-columns:repeat(3,1fr);
+  gap:16px;
+  margin-bottom:22px;
+}
+
+.summary-card{
+  background:#fff;
+  border:1px solid #d8d8d2;
+  padding:18px;
+}
+
+.summary-number{
+  font-size:2rem;
+  font-weight:900;
+  color:var(--ink);
+}
+
+.management-grid{
+  display:grid;
+  grid-template-columns:repeat(3,1fr);
+  gap:14px;
+  margin-bottom:22px;
+}
+
+.management-card{
+  display:block;
+  background:#fff;
+  border:1px solid #d8d8d2;
+  border-left:5px solid var(--green);
+  padding:16px 18px;
+  text-decoration:none;
+  color:inherit;
+}
+
+.management-card:hover{
+  border-color:var(--ink);
+}
+
+.management-card.warning{
+  border-left-color:var(--gold);
+}
+
+.management-card.danger{
+  border-left-color:var(--danger);
+}
+
+.management-card.muted{
+  border-left-color:#7a827e;
+}
+
+.management-card .summary-number{
+  margin-top:4px;
+}
+
+.management-card .small{
+  margin-top:6px;
+}
+
+@media(max-width:760px){
+
+  .grid,
+  .form-grid,
+  .summary-grid,
+  .management-grid{
+    grid-template-columns:1fr;
+  }
+
+  .form-grid .full{
+    grid-column:auto;
+  }
+
+  table{
+    font-size:.88rem;
+  }
+
+  th,
+  td{
+    padding:8px;
+  }
+
+  .filters input,
+  .filters select{
+    width:100%;
+  }
+
+}
+
+</style>
+
+</head>
+
+<body>
+
+<header>
+
+<div class="wrap">
+
+<div class="brand">
+FL<span>TRACT</span> Admin
+</div>
+
+<nav>
+<a href="/">Inquiries</a>
+<a href="/followups">Follow Ups</a>
+<a href="/integrity">Data Integrity</a>
+<a href="/dry-run">Dry Run</a>
+<a href="/sops">Procedures</a>
+${trainingManagerAuthorized(staff) ? '<a href="/sops/manage">SOP Management</a>' : ""}
+        ${securityManagerAuthorized(staff) ? '<a href="/security-audit">Security & Audit</a>' : ""}
+<a href="/training">Training</a>
+<a href="/work-routing">Work Routing</a>
+${trainingManagerAuthorized(staff) ? '<a href="/training/manage">Training Management</a>' : ""}
+<a href="/export.csv">Export CSV</a>
+</nav>
+
+</div>
+
+</header>
+
+<main>
+
+<div class="wrap">
+
+${body}
+
+</div>
+
+</main>
+
+<script>
+function setFollowupDate(id, days) {
+  const input = document.getElementById(id);
+  if (!input) return;
+  const date = new Date();
+  date.setHours(12,0,0,0);
+  date.setDate(date.getDate() + Number(days || 0));
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  input.value = y + "-" + m + "-" + d;
+}
+</script>
+
+</body>
+
+</html>`;
+}
+
 
 
 const staff = await staffContext(env, request);
