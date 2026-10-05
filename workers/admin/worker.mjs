@@ -2013,6 +2013,7 @@ FL<span>TRACT</span> Admin
 <a href="/">Inquiries</a>
 <a href="/followups">Follow Ups</a>
 <a href="/integrity">Data Integrity</a>
+<a href="/dry-run">Dry Run</a>
 <a href="/export.csv">Export CSV</a>
 </nav>
 
@@ -2543,6 +2544,27 @@ Number(r.rule_value) || 90;
 }
 
 } catch {}
+
+
+/* ============================================================
+   WORKFLOW DRY RUN
+   ============================================================ */
+
+if (request.method === "GET" && url.pathname === "/dry-run") {
+  return new Response(await dryRunPage(env), {
+    headers: {"content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"}
+  });
+}
+
+if (request.method === "POST" && url.pathname === "/dry-run") {
+  if (!sameOriginPost(request)) return new Response("Invalid request origin.", {status:403});
+  const form = await request.formData();
+  const workflowId = Number(form.get("workflow_id"));
+  const subjectId = Number(form.get("subject_id"));
+  if (!workflowId || !subjectId) return new Response("Workflow and test property are required.", {status:400});
+  await executeDryRun(env, workflowId, "Property", subjectId, staff.email || "Authorized Staff");
+  return redirect("/dry-run");
+}
 
 
 /* ============================================================
