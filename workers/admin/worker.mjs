@@ -2342,8 +2342,8 @@ async function completeMiniCompResearchWork(env, reportId, reportStatus, perform
 
 function workDeadlineSchedule(hours, warningMinutes, now=Date.now()) {
   const h=Number(hours), w=Number(warningMinutes);
-  if(!Number.isFinite(h)||h<0.1||h>720||!Number.isFinite(w)||w<1||w>=h*60)
-    throw new Error("Due time must be 0.1–720 hours from now; warning minutes must be at least 1 and less than the due interval.");
+  if(!Number.isInteger(h)||h<1||h>720||!Number.isFinite(w)||w<1||w>=h*60)
+    throw new Error("Due time must be 1–720 whole hours from now; warning minutes must be at least 1 and less than the due interval.");
   return {due:new Date(now+h*3600000).toISOString(),warning:new Date(now+h*3600000-w*60000).toISOString(),minutes:Math.round(h*60)};
 }
 function workDeadlineDisplay(value) {
@@ -2385,7 +2385,7 @@ async function workRoutingPage(env, staff, notice="") {
     <td class="small">Due: ${esc(workDeadlineDisplay(w.due_at))}<br>Warning: ${esc(workDeadlineDisplay(w.warning_at))}
     ${trainingManagerAuthorized(staff)&&!["Completed","Closed","Cancelled"].includes(w.status)?`
       <form method="post" action="/work-routing/${w.id}/deadline" style="margin-top:8px">
-        <label>Due in hours <input type="number" name="hours" min="0.1" max="720" step="0.1" required></label>
+        <label>Due in hours <input type="number" name="hours" min="1" max="720" step="1" required></label>
         <label>Warn minutes before due <input type="number" name="warning_minutes" min="1" step="1" required></label>
         <input name="reason" maxlength="500" placeholder="Reason for setting / changing deadline" required>
         <button type="submit">Set Deadline</button>
