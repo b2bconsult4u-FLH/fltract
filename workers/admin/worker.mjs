@@ -2339,6 +2339,19 @@ async function completeMiniCompResearchWork(env, reportId, reportStatus, perform
   ]);
 }
 
+
+function workDeadlineSchedule(hours, warningMinutes, now=Date.now()) {
+  const h=Number(hours), w=Number(warningMinutes);
+  if(!Number.isFinite(h)||h<0.1||h>720||!Number.isFinite(w)||w<1||w>=h*60)
+    throw new Error("Due time must be 0.1–720 hours from now; warning minutes must be at least 1 and less than the due interval.");
+  return {due:new Date(now+h*3600000).toISOString(),warning:new Date(now+h*3600000-w*60000).toISOString(),minutes:Math.round(h*60)};
+}
+function workDeadlineDisplay(value) {
+  if(!value) return "Not set";
+  const date=new Date(value);
+  return Number.isNaN(date.getTime())?"Invalid deadline":date.toLocaleString("en-US",{timeZone:"America/New_York",dateStyle:"medium",timeStyle:"short"})+" Eastern";
+}
+
 async function workRoutingPage(env, staff, notice="") {
   const activeStaff=await env.DB.prepare(`SELECT id,email,role FROM staff_users WHERE active=1 ORDER BY email`).all();
   const staffOptions=activeStaff.results.map(u=>`<option value="${u.id}">${esc(u.email||("Staff #"+u.id))} — ${esc(u.role||"Employee")}</option>`).join("");
@@ -2369,6 +2382,14 @@ async function workRoutingPage(env, staff, notice="") {
         <input name="note" maxlength="2000" placeholder="Progress note" ${w.status==="In Progress"?"required":""}>
         <button type="submit">${w.status==="Assigned"?"Start Work":"Record Progress"}</button>
       </form>`:""}</td>
+    <td class="small">Due: ${esc(workDeadlineDisplay(w.due_at))}<br>Warning: ${esc(workDeadlineDisplay(w.warning_at))}
+    ${trainingManagerAuthorized(staff)&&!["Completed","Closed","Cancelled"].includes(w.status)?`
+      <form method="post" action="/work-routing/${w.id}/deadline" style="margin-top:8px">
+        <label>Due in hours <input type="number" name="hours" min="0.1" max="720" step="0.1" required></label>
+        <label>Warn minutes before due <input type="number" name="warning_minutes" min="1" step="1" required></label>
+        <input name="reason" maxlength="500" placeholder="Reason for setting / changing deadline" required>
+        <button type="submit">Set Deadline</button>
+      </form>`:""}</td>
     <td class="small">${esc(w.routing_reason||"")}${trainingManagerAuthorized(staff)&&["Escalated","Escalation Required","Assigned"].includes(w.status)?`
       <form method="post" action="/work-routing/${w.id}/redirect" style="margin-top:8px">
         <select name="target_staff_id" required>
@@ -2377,7 +2398,7 @@ async function workRoutingPage(env, staff, notice="") {
         </select>
         <input name="reason" maxlength="500" placeholder="Reason for redirect / override" required>
         <button type="submit">Redirect Work</button>
-      </form>`:""}</td></tr>`).join(""):'<tr><td colspan="9" class="empty">No work items have been queued yet.</td></tr>';
+      </form>`:""}</td></tr>`).join(""):'<tr><td colspan="10" class="empty">No work items have been queued yet.</td></tr>';
   return page(`<h1>Universal Work Routing</h1>
     ${notice?`<div class="panel" role="status">${esc(notice)}</div>`:""}
     <div class="panel"><h2>Routing Dashboard</h2>
@@ -2392,7 +2413,7 @@ async function workRoutingPage(env, staff, notice="") {
     </div>
     ${trainingManagerAuthorized(staff)?'<form method="post" action="/work-routing/run"><button type="submit">Route Queued Work</button></form><form method="post" action="/work-routing/check-deadlines" style="margin-top:8px"><button type="submit">Check Deadlines Now</button></form>':""}
     </div>
-    <div class="panel"><h2>Work Queue</h2><table><thead><tr><th>ID</th><th>Work</th><th>Module</th><th>Priority</th><th>Required Role</th><th>Competency</th><th>Assigned To</th><th>Status</th><th>Routing Reason</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="panel"><h2>Work Queue</h2><table><thead><tr><th>ID</th><th>Work</th><th>Module</th><th>Priority</th><th>Required Role</th><th>Competency</th><th>Assigned To</th><th>Status</th><th>Deadline</th><th>Routing Reason</th></tr></thead><tbody>${rows}</tbody></table></div>
   `,"Universal Work Routing | FLTract Admin");
 }
 
@@ -2474,7 +2495,7 @@ async function managerRedirectWork(env, workItemId, targetStaffId, reason, staff
     ) VALUES (?,?,?,?,?,?)
   `).bind(item.id,override?"Manager Override":"Manager Redirect",item.assigned_staff_email||"",
     target.email||"",auditReason,staff.email||"Authorized Manager").run();
-  await appendAuditEvent(env,{staff,action:override?"Work Manager Override":"Work Redirect",subjectType:"Work Item",subjectId:item.id,reason:auditReason,metadata:{from:item.assigned_staff_email||"",to:target.email||"",role_ok:roleOk,competency_ok:competencyOk}});
+  await appendAuditEvent(env,{staff,action:override?"Work Manager Override":"Work Redirect",subjectType:"Work Item",subjectId:item.id,reason:auditReason,metadata:{from:item.assigned_staff_email||"",to:target.email||"",role_ok:roleEligible,competency_ok:competencyEligible}});
 }
 
 function auditUuid() {
@@ -3504,7 +3525,7 @@ if(request.method==="GET" && url.pathname==="/work-routing"){
   if(!staff?.authenticated || !staff?.user?.active) return await denyAndAudit(env,staff,request,"View Work Routing");
   const count=key=>Math.max(0,Math.min(1000000,Number.parseInt(url.searchParams.get(key),10)||0));
   const action=url.searchParams.get("completed");
-  const notice=action==="progress"?"Progress update processed. Current task state is shown below.":action==="routing"?`Routing completed: ${count("assigned")} assigned; ${count("held")} escalated for management review.`:action==="deadlines"?`Deadline check completed: ${count("checked")} items checked; ${count("warned")} warnings; ${count("overdue")} overdue; ${count("escalated")} escalations.`:"";
+  const notice=action==="deadline-set"?"Deadline saved. Due and warning times are shown below.":action==="progress"?"Progress update processed. Current task state is shown below.":action==="routing"?`Routing completed: ${count("assigned")} assigned; ${count("held")} escalated for management review.`:action==="deadlines"?`Deadline check completed: ${count("checked")} items checked; ${count("warned")} warnings; ${count("overdue")} overdue; ${count("escalated")} escalations.`:"";
   return new Response(await workRoutingPage(env,staff,notice),{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"}});
 }
 
@@ -3527,6 +3548,34 @@ if(request.method==="POST" && /^\/work-routing\/\d+\/progress$/.test(url.pathnam
       .bind(action==="start"?"In Progress":item.status,item.id,item.status,item.assigned_staff_user_id,item.assigned_staff_email)
   ]);
   return redirect("/work-routing?completed=progress");
+}
+
+
+if(request.method==="POST" && /^\/work-routing\/\d+\/deadline$/.test(url.pathname)){
+  if(!sameOriginPost(request)) return new Response("Invalid request origin.",{status:403});
+  if(!trainingManagerAuthorized(staff)) return await denyAndAudit(env,staff,request,"Set Work Deadline");
+  const item=await env.DB.prepare("SELECT * FROM flt_work_items WHERE id=?").bind(Number(url.pathname.split("/")[2])).first();
+  if(!item) return new Response("Work item not found.",{status:404});
+  if(["Completed","Closed","Cancelled"].includes(item.status)) return new Response("Completed or closed work cannot receive a deadline.",{status:409});
+  const form=await request.formData();
+  const reason=String(form.get("reason")||"").trim().slice(0,500);
+  if(!reason) return new Response("A deadline reason is required.",{status:400});
+  let schedule;
+  try { schedule=workDeadlineSchedule(form.get("hours"),form.get("warning_minutes")); }
+  catch(error) { return new Response(error.message,{status:400}); }
+  const auditReason=`Manager deadline: due ${schedule.due}; warning ${schedule.warning}. Previous due: ${item.due_at||"not set"}. ${reason}`;
+  const results=await env.DB.batch([
+    env.DB.prepare(`INSERT INTO flt_work_routing_events(work_item_id,event_type,from_staff_email,to_staff_email,reason,performed_by)
+      SELECT id,'Deadline Set',assigned_staff_email,assigned_staff_email,?,? FROM flt_work_items WHERE id=? AND status=? AND due_at IS ?`)
+      .bind(auditReason,staff.email||"Authorized Manager",item.id,item.status,item.due_at),
+    env.DB.prepare(`UPDATE flt_work_items SET due_at=?,warning_at=?,sla_minutes=?,deadline_type='Operational',
+      escalation_level=0,last_deadline_check_at=NULL,
+      status=CASE WHEN status IN ('Deadline Warning','Overdue') THEN CASE WHEN assigned_staff_user_id IS NOT NULL THEN 'Assigned' ELSE 'Escalation Required' END ELSE status END
+      WHERE id=? AND status=? AND due_at IS ?`)
+      .bind(schedule.due,schedule.warning,schedule.minutes,item.id,item.status,item.due_at)
+  ]);
+  if(!results[1]?.meta?.changes) return new Response("Work changed while saving. Refresh Work Routing and try again.",{status:409});
+  return redirect("/work-routing?completed=deadline-set");
 }
 
 if(request.method==="POST" && url.pathname==="/work-routing/check-deadlines"){
