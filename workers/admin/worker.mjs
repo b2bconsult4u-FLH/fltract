@@ -2480,9 +2480,11 @@ async function workTaskPage(env, staff, item) {
 }
 async function workRoutingPage(env, staff, notice="", params=new URLSearchParams()) {
   const statuses=["Queued","Assigned","In Progress","Escalated","Escalation Required","Deadline Warning","Overdue","Completed","Closed","Cancelled"];
-  const selected=statuses.includes(params.get("status"))?params.get("status"):"";
-  const where=selected?"WHERE w.status=?":"";
-  const args=selected?[selected]:[];
+  const groups={"Deadline Risk":["Deadline Warning","Overdue"],"All Escalations":["Escalated","Escalation Required"]};
+  const filters=[...statuses,...Object.keys(groups)];
+  const selected=filters.includes(params.get("status"))?params.get("status"):"";
+  const args=groups[selected]|| (selected?[selected]:[]);
+  const where=args.length?`WHERE w.status IN (${args.map(()=>"?").join(",")})`:"";
   const matched=await env.DB.prepare(`SELECT COUNT(*) total FROM flt_work_items w ${where}`).bind(...args).first();
   const total=Number(matched?.total||0), pages=Math.max(1,Math.ceil(total/25));
   const current=Math.max(1,Math.min(pages,Number.parseInt(params.get("page"),10)||1));
@@ -2514,17 +2516,12 @@ async function workRoutingPage(env, staff, notice="", params=new URLSearchParams
     ${notice?`<div class="panel" role="status">${esc(notice)}</div>`:""}
     <div class="panel"><h2>Routing Dashboard</h2>
     <p class="section-note">FLTract routes work only to active staff who satisfy the configured role and competency requirements. Training results can establish competency but never grant permissions.</p>
-    <div class="management-grid">
-      <div class="management-card"><div class="label">All Work</div><div class="summary-number">${Number(counts?.total||0)}</div></div>
-      <div class="management-card warning"><div class="label">Queued</div><div class="summary-number">${Number(counts?.queued||0)}</div></div>
-      <div class="management-card"><div class="label">Assigned</div><div class="summary-number">${Number(counts?.assigned||0)}</div></div>
-      <div class="management-card"><div class="label">In Progress</div><div class="summary-number">${Number(counts?.in_progress||0)}</div></div>
-      <div class="management-card warning"><div class="label">Escalated</div><div class="summary-number">${Number(counts?.escalated||0)}</div></div>
-      <div class="management-card warning"><div class="label">Deadline Risk</div><div class="summary-number">${Number(counts?.deadline_risk||0)}</div></div>
-    </div>
+    <nav class="work-status-filters" aria-label="Filter work queue">
+    ${[["All Work","",counts?.total],["Queued","Queued",counts?.queued],["Assigned","Assigned",counts?.assigned],["In Progress","In Progress",counts?.in_progress],["Escalated","All Escalations",counts?.escalated],["Deadline Risk","Deadline Risk",counts?.deadline_risk]].map(([label,status,count])=>`<a class="work-status-filter ${status===selected?"selected":""}" href="/work-routing${status?"?status="+encodeURIComponent(status):""}#work-queue" ${status===selected?'aria-current="true"':""}><span>${esc(label)}</span><strong>${Number(count||0)}</strong></a>`).join("")}
+    </nav>
     ${trainingManagerAuthorized(staff)?'<form method="post" action="/work-routing/run"><button type="submit">Route Queued Work</button></form><form method="post" action="/work-routing/check-deadlines" style="margin-top:8px"><button type="submit">Check Deadlines Now</button></form>':""}
     </div>
-    <div class="panel"><h2>Work Queue</h2><form method="get" class="action-row" style="margin-bottom:16px"><label>Status <select name="status"><option value="">All statuses</option>${statuses.map(s=>`<option value="${esc(s)}" ${s===selected?"selected":""}>${esc(s)}</option>`).join("")}</select></label><button type="submit">Apply Filter</button><a class="nav-button" href="/work-routing">Clear</a></form><div class="work-queue-wrap"><table class="work-queue"><thead><tr><th>ID</th><th>Work / Module</th><th>Requirements</th><th>Assigned To</th><th>Status</th><th>Deadline</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table></div><div class="action-row" style="margin-top:16px">${current>1?`<a class="nav-button" href="${esc(pageUrl(current-1))}">← Previous</a>`:""}<span class="small">Page ${current} of ${pages} · ${total} matching tasks · 25 per page</span>${current<pages?`<a class="nav-button" href="${esc(pageUrl(current+1))}">Next →</a>`:""}</div></div>
+    <div class="panel" id="work-queue"><h2>Work Queue</h2><form method="get" class="action-row" style="margin-bottom:16px"><label>Status <select name="status"><option value="">All statuses</option>${filters.map(s=>`<option value="${esc(s)}" ${s===selected?"selected":""}>${esc(s)}</option>`).join("")}</select></label><button type="submit">Apply Filter</button><a class="nav-button" href="/work-routing">Clear</a></form><div class="work-queue-wrap"><table class="work-queue"><thead><tr><th>ID</th><th>Work / Module</th><th>Requirements</th><th>Assigned To</th><th>Status</th><th>Deadline</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table></div><div class="action-row" style="margin-top:16px">${current>1?`<a class="nav-button" href="${esc(pageUrl(current-1))}">← Previous</a>`:""}<span class="small">Page ${current} of ${pages} · ${total} matching tasks · 25 per page</span>${current<pages?`<a class="nav-button" href="${esc(pageUrl(current+1))}">Next →</a>`:""}</div></div>
   `,"Universal Work Routing | FLTract Admin");
 }
 
@@ -3448,6 +3445,12 @@ label span{
 
 }
 
+
+.work-status-filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:12px 0 16px}
+.work-status-filter{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid #b9c8c0;border-radius:6px;text-decoration:none;color:#153b30;background:#fff;font-weight:600}
+.work-status-filter strong{font-size:1.25rem}
+.work-status-filter:hover,.work-status-filter.selected{background:#e9f2ed;border-color:#285c46}
+.work-status-filter:focus-visible{outline:3px solid #bb8a32;outline-offset:2px}
 </style>
 
 </head>
