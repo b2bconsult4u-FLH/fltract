@@ -2494,7 +2494,7 @@ async function workRoutingPage(env, staff, notice="") {
     </div>
     ${trainingManagerAuthorized(staff)?'<form method="post" action="/work-routing/run"><button type="submit">Route Queued Work</button></form><form method="post" action="/work-routing/check-deadlines" style="margin-top:8px"><button type="submit">Check Deadlines Now</button></form>':""}
     </div>
-    <div class="panel"><h2>Work Queue</h2><table><thead><tr><th>ID</th><th>Work</th><th>Module</th><th>Priority</th><th>Required Role</th><th>Competency</th><th>Assigned To</th><th>Status</th><th>Deadline</th><th>Routing Reason</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="panel"><h2>Work Queue</h2><div class="work-queue-wrap"><table class="work-queue"><thead><tr><th>ID</th><th>Work</th><th>Module</th><th>Priority</th><th>Required Role</th><th>Competency</th><th>Assigned To</th><th>Status</th><th>Deadline</th><th>Routing Reason</th></tr></thead><tbody>${rows}</tbody></table></div></div>
   `,"Universal Work Routing | FLTract Admin");
 }
 
@@ -3263,22 +3263,25 @@ label span{
   display:inline-flex;
   align-items:center;
   justify-content:center;
-  min-height:44px;
-  padding:9px 12px;
-  border:2px solid var(--green);
+  min-height:30px;
+  padding:4px 6px;
+  border:1px solid var(--green);
   border-radius:6px;
   background:#fff;
   color:var(--green);
   font-weight:700;
-  font-size:.88rem;
-  line-height:1.3;
+  font-size:.78rem;
+  line-height:1.2;
   text-decoration:none;
   text-align:center;
   box-sizing:border-box;
 }
 .nav-button:hover{background:var(--green);color:#fff;text-decoration:none;}
 .nav-button:focus-visible{outline:3px solid var(--gold);outline-offset:3px;}
-.work-nav{display:flex;flex-direction:column;align-items:flex-start;gap:8px;margin-top:10px;min-width:145px;}
+.work-nav{display:flex;flex-direction:column;align-items:flex-start;gap:5px;margin-top:6px;min-width:0;}
+.work-queue-wrap{max-width:100%;overflow-x:auto;}
+.work-queue td{overflow-wrap:anywhere;}
+.work-queue input,.work-queue select{min-width:0;max-width:100%;}
 .work-nav .nav-button{width:100%;}
 
 .back{
