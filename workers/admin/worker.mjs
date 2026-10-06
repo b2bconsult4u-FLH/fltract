@@ -2410,6 +2410,29 @@ function workDeadlineDisplay(value) {
   return Number.isNaN(date.getTime())?"Invalid deadline":date.toLocaleString("en-US",{timeZone:"America/New_York",dateStyle:"medium",timeStyle:"short"})+" Eastern";
 }
 
+
+async function workHistoryPage(env, item) {
+  const events=await env.DB.prepare(`SELECT * FROM flt_work_routing_events WHERE work_item_id=? ORDER BY id DESC LIMIT 100`).bind(item.id).all();
+  const rows=events.results.map(event=>{
+    const timestamp=String(event.created_at||"");
+    const time=/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(timestamp)?timestamp.replace(" ","T")+"Z":timestamp;
+    return `<tr><td>${esc(workDeadlineDisplay(time))}</td><td>${esc(event.event_type)}</td>
+      <td>${esc(event.performed_by||"System")}</td>
+      <td>${esc(event.from_staff_email||"—")}</td><td>${esc(event.to_staff_email||"—")}</td>
+      <td style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(event.reason||"")}</td></tr>`;
+  }).join("");
+  return page(`<h1>Task #${Number(item.id)} History</h1>
+    <p><a href="/work-routing">← Work Routing</a></p>
+    <div class="panel"><h2>${esc(item.title||item.work_type)}</h2>
+      <p>Status: <strong>${esc(item.status)}</strong> · Assigned to: ${esc(item.assigned_staff_email||"Unassigned")}</p>
+      <p>Due: ${esc(workDeadlineDisplay(item.due_at))}<br>Warning: ${esc(workDeadlineDisplay(item.warning_at))}</p>
+    </div>
+    <div class="panel"><h2>Recent Activity</h2><p class="section-note">Latest 100 recorded events, newest first. Times are Eastern.</p>
+      <div style="overflow-x:auto"><table><thead><tr><th>Time</th><th>Event</th><th>Recorded By</th><th>From</th><th>To</th><th>Note / Reason</th></tr></thead>
+      <tbody>${rows||'<tr><td colspan="6" class="empty">No activity recorded.</td></tr>'}</tbody></table></div>
+    </div>`,"Task History | FLTract Admin");
+}
+
 async function workRoutingPage(env, staff, notice="") {
   const activeStaff=await env.DB.prepare(`SELECT id,email,role FROM staff_users WHERE active=1 ORDER BY email`).all();
   const staffOptions=activeStaff.results.map(u=>`<option value="${u.id}">${esc(u.email||("Staff #"+u.id))} — ${esc(u.role||"Employee")}</option>`).join("");
@@ -2430,7 +2453,7 @@ async function workRoutingPage(env, staff, notice="") {
     FROM flt_work_items
   `).first();
   const rows=items.results.length?items.results.map(w=>`<tr>
-    <td>#${w.id}</td><td>${esc(w.title||w.work_type)}${Number(w.routing_property_id)>0?`<div style="margin-top:8px"><a href="/property/${Number(w.routing_property_id)}">Open Property Research</a><br><a href="/property/${Number(w.routing_property_id)}/mini-comp">Open Mini-Comp Workspace</a></div>`:""}</td><td>${esc(w.module_key)}</td>
+    <td>#${w.id}${canActOnWork(staff,w)?`<div style="margin-top:8px"><a href="/work-routing/${w.id}/history">Task History</a></div>`:""}</td><td>${esc(w.title||w.work_type)}${Number(w.routing_property_id)>0?`<div style="margin-top:8px"><a href="/property/${Number(w.routing_property_id)}">Open Property Research</a><br><a href="/property/${Number(w.routing_property_id)}/mini-comp">Open Mini-Comp Workspace</a></div>`:""}</td><td>${esc(w.module_key)}</td>
     <td><span class="badge">${esc(w.priority)}</span></td><td>${esc(w.required_role)}</td>
     <td>${esc(w.required_competency||"None")}</td><td>${esc(w.assigned_staff_email||"Unassigned")}</td>
     <td><span class="badge ${w.status==="Queued"?"warning":w.status==="Assigned"?"good":"muted"}">${esc(w.status)}</span>
@@ -3527,6 +3550,15 @@ if(request.method==="GET" && url.pathname==="/sops"){
 /* ============================================================
    UNIVERSAL WORK ROUTING
    ============================================================ */
+
+
+if(request.method==="GET" && /^\/work-routing\/\d+\/history$/.test(url.pathname)){
+  if(!staff?.authenticated || !staff?.user?.active) return await denyAndAudit(env,staff,request,"View Work History");
+  const item=await env.DB.prepare("SELECT * FROM flt_work_items WHERE id=?").bind(Number(url.pathname.split("/")[2])).first();
+  if(!item) return new Response("Work item not found.",{status:404});
+  if(!canActOnWork(staff,item)) return await denyAndAudit(env,staff,request,"View Work History");
+  return new Response(await workHistoryPage(env,item),{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"}});
+}
 
 if(request.method==="GET" && url.pathname==="/work-routing"){
   if(!staff?.authenticated || !staff?.user?.active) return await denyAndAudit(env,staff,request,"View Work Routing");
