@@ -2452,26 +2452,37 @@ async function workRoutingPage(env, staff, notice="") {
       SUM(CASE WHEN status IN ('Deadline Warning','Overdue') THEN 1 ELSE 0 END) deadline_risk
     FROM flt_work_items
   `).first();
-  const rows=items.results.length?items.results.map(w=>`<tr>
-    <td>#${w.id}${canActOnWork(staff,w)?`<div style="margin-top:8px"><a class="nav-button" href="/work-routing/${w.id}/history">Task History</a></div>`:""}</td><td>${esc(w.title||w.work_type)}${Number(w.routing_property_id)>0?`<div class="work-nav"><a class="nav-button" href="/property/${Number(w.routing_property_id)}">Open Property Research</a><a class="nav-button" href="/property/${Number(w.routing_property_id)}/mini-comp">Open Mini-Comp Workspace</a></div>`:""}</td><td>${esc(w.module_key)}</td>
-    <td><span class="badge">${esc(w.priority)}</span></td><td>${esc(w.required_role)}</td>
-    <td>${esc(w.required_competency||"None")}</td><td>${esc(w.assigned_staff_email||"Unassigned")}</td>
-    <td><span class="badge ${w.status==="Queued"?"warning":w.status==="Assigned"?"good":"muted"}">${esc(w.status)}</span>
-    ${canActOnWork(staff,w)&&["Assigned","In Progress","Deadline Warning","Overdue"].includes(w.status)?`
+  const rows=items.results.length?items.results.map(w=>`<tr class="work-summary">
+    <td>#${Number(w.id)}</td>
+    <td><strong>${esc(w.title||w.work_type)}</strong><div class="small">${esc(w.module_key)}</div></td>
+    <td><span class="badge">${esc(w.priority)}</span><div class="small">${esc(w.required_role)} · ${esc(w.required_competency||"No competency required")}</div></td>
+    <td>${esc(w.assigned_staff_email||"Unassigned")}</td>
+    <td><span class="badge ${["Deadline Warning","Overdue"].includes(w.status)?"warning":w.status==="Assigned"?"good":"muted"}">${esc(w.status)}</span></td>
+    <td class="small"><strong>Due:</strong> ${esc(workDeadlineDisplay(w.due_at))}<br><strong>Warning:</strong> ${esc(workDeadlineDisplay(w.warning_at))}</td>
+    </tr><tr class="work-detail-row"><td colspan="6">
+      <div class="task-navigation">
+        ${canActOnWork(staff,w)?`<a class="nav-button" href="/work-routing/${w.id}/history">Task History</a>`:""}
+        ${Number(w.routing_property_id)>0?`<a class="nav-button" href="/property/${Number(w.routing_property_id)}">Property Research</a><a class="nav-button" href="/property/${Number(w.routing_property_id)}/mini-comp">Mini-Comp Workspace</a>`:""}
+      </div>
+      <details class="task-controls"><summary>Task details and controls</summary>
+        <p class="small"><strong>Routing reason:</strong> ${esc(w.routing_reason||"None recorded")}</p>
+        <div class="task-control-grid">
+          <div>    ${canActOnWork(staff,w)&&["Assigned","In Progress","Deadline Warning","Overdue"].includes(w.status)?`
       <form method="post" action="/work-routing/${w.id}/progress" style="margin-top:8px">
         <input type="hidden" name="action" value="${w.status==="Assigned"?"start":"note"}">
         <input name="note" maxlength="2000" placeholder="Progress note" ${w.status!=="Assigned"?"required":""}>
         <button type="submit">${w.status==="Assigned"?"Start Work":"Record Progress"}</button>
-      </form>`:""}</td>
-    <td class="small">Due: ${esc(workDeadlineDisplay(w.due_at))}<br>Warning: ${esc(workDeadlineDisplay(w.warning_at))}
-    ${trainingManagerAuthorized(staff)&&!["Completed","Closed","Cancelled"].includes(w.status)?`
+      </form>`:""}
+</div>
+          <div>    ${trainingManagerAuthorized(staff)&&!["Completed","Closed","Cancelled"].includes(w.status)?`
       <form method="post" action="/work-routing/${w.id}/deadline" style="margin-top:8px">
         <label>Due in hours <input type="number" name="hours" min="1" max="720" step="1" required></label>
         <label>Warn minutes before due <input type="number" name="warning_minutes" min="1" step="1" required></label>
         <input name="reason" maxlength="500" placeholder="Reason for setting / changing deadline" required>
         <button type="submit">Set Deadline</button>
-      </form>`:""}</td>
-    <td class="small">${esc(w.routing_reason||"")}${trainingManagerAuthorized(staff)&&["Escalated","Escalation Required","Assigned","Deadline Warning","Overdue"].includes(w.status)?`
+      </form>`:""}
+</div>
+          <div>${trainingManagerAuthorized(staff)&&["Escalated","Escalation Required","Assigned","Deadline Warning","Overdue"].includes(w.status)?`
       <form method="post" action="/work-routing/${w.id}/redirect" style="margin-top:8px">
         <select name="target_staff_id" required>
           <option value="">Redirect to active employee…</option>
@@ -2479,7 +2490,10 @@ async function workRoutingPage(env, staff, notice="") {
         </select>
         <input name="reason" maxlength="500" placeholder="Reason for redirect / override" required>
         <button type="submit">Redirect Work</button>
-      </form>`:""}</td></tr>`).join(""):'<tr><td colspan="10" class="empty">No work items have been queued yet.</td></tr>';
+      </form>`:""}</div>
+        </div>
+      </details>
+    </td></tr>`).join(""):'<tr><td colspan="6" class="empty">No work items have been queued yet.</td></tr>';
   return page(`<h1>Universal Work Routing</h1>
     ${notice?`<div class="panel" role="status">${esc(notice)}</div>`:""}
     <div class="panel"><h2>Routing Dashboard</h2>
@@ -2494,7 +2508,7 @@ async function workRoutingPage(env, staff, notice="") {
     </div>
     ${trainingManagerAuthorized(staff)?'<form method="post" action="/work-routing/run"><button type="submit">Route Queued Work</button></form><form method="post" action="/work-routing/check-deadlines" style="margin-top:8px"><button type="submit">Check Deadlines Now</button></form>':""}
     </div>
-    <div class="panel"><h2>Work Queue</h2><div class="work-queue-wrap"><table class="work-queue"><thead><tr><th>ID</th><th>Work</th><th>Module</th><th>Priority</th><th>Required Role</th><th>Competency</th><th>Assigned To</th><th>Status</th><th>Deadline</th><th>Routing Reason</th></tr></thead><tbody>${rows}</tbody></table></div></div>
+    <div class="panel"><h2>Work Queue</h2><div class="work-queue-wrap"><table class="work-queue"><thead><tr><th>ID</th><th>Work / Module</th><th>Requirements</th><th>Assigned To</th><th>Status</th><th>Deadline</th></tr></thead><tbody>${rows}</tbody></table></div></div>
   `,"Universal Work Routing | FLTract Admin");
 }
 
@@ -3283,6 +3297,18 @@ label span{
 .work-queue td{overflow-wrap:anywhere;}
 .work-queue input,.work-queue select{min-width:0;max-width:100%;}
 .work-nav .nav-button{width:100%;}
+
+
+.task-navigation{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 10px;}
+.task-navigation .nav-button{white-space:nowrap;word-break:normal;overflow-wrap:normal;padding:6px 10px;min-height:32px;}
+.work-queue th:first-child,.work-summary td:first-child{width:48px;white-space:nowrap;}
+.work-summary td{vertical-align:top;}
+.work-detail-row>td{padding-top:0;padding-bottom:20px;border-bottom:2px solid #e5e1d7;}
+.task-controls summary{cursor:pointer;font-weight:700;color:var(--green);padding:6px 0;}
+.task-control-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:20px;}
+.task-control-grid form{display:flex;flex-direction:column;gap:8px;}
+.task-control-grid input,.task-control-grid select{width:100%;box-sizing:border-box;}
+.task-control-grid button{align-self:flex-start;white-space:nowrap;}
 
 .back{
   display:inline-block;
