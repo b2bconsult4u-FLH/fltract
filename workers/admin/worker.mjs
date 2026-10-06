@@ -2433,16 +2433,65 @@ async function workHistoryPage(env, item) {
     </div>`,"Task History | FLTract Admin");
 }
 
-async function workRoutingPage(env, staff, notice="") {
-  const activeStaff=await env.DB.prepare(`SELECT id,email,role FROM staff_users WHERE active=1 ORDER BY email`).all();
-  const staffOptions=activeStaff.results.map(u=>`<option value="${u.id}">${esc(u.email||("Staff #"+u.id))} — ${esc(u.role||"Employee")}</option>`).join("");
+
+async function workTaskPage(env, staff, item) {
+  const activeStaff=await env.DB.prepare("SELECT id,email,role FROM staff_users WHERE active=1 ORDER BY email").all();
+  const staffOptions=activeStaff.results.map(u=>`<option value="${Number(u.id)}">${esc(u.email||("Staff #"+u.id))} — ${esc(u.role||"Employee")}</option>`).join("");
+  return page(`<h1>Task #${Number(item.id)}</h1><p><a class="nav-button" href="/work-routing">← Work Queue</a></p>
+    <div class="panel"><h2>${esc(item.title||item.work_type)}</h2>
+      <p><strong>Status:</strong> ${esc(item.status)} · <strong>Assigned to:</strong> ${esc(item.assigned_staff_email||"Unassigned")}</p>
+      <p><strong>Module:</strong> ${esc(item.module_key)} · <strong>Priority:</strong> ${esc(item.priority)} · <strong>Requirements:</strong> ${esc(item.required_role)} / ${esc(item.required_competency||"None")}</p>
+      <p><strong>Due:</strong> ${esc(workDeadlineDisplay(item.due_at))}<br><strong>Warning:</strong> ${esc(workDeadlineDisplay(item.warning_at))}</p>
+            <div class="task-navigation">
+        ${canActOnWork(staff,item)?`<a class="nav-button" href="/work-routing/${item.id}/history">Task History</a>`:""}
+        ${Number(item.routing_property_id)>0?`<a class="nav-button" href="/property/${Number(item.routing_property_id)}">Property Research</a><a class="nav-button" href="/property/${Number(item.routing_property_id)}/mini-comp">Mini-Comp Workspace</a>`:""}
+      </div>
+      <details class="task-controls" open><summary>Task details and controls</summary>
+        <p class="small"><strong>Routing reason:</strong> ${esc(item.routing_reason||"None recorded")}</p>
+        <div class="task-control-grid">
+          <div>    ${canActOnWork(staff,item)&&["Assigned","In Progress","Deadline Warning","Overdue"].includes(item.status)?`
+      <form method="post" action="/work-routing/${item.id}/progress" style="margin-top:8px">
+        <input type="hidden" name="action" value="${item.status==="Assigned"?"start":"note"}">
+        <input name="note" maxlength="2000" placeholder="Progress note" ${item.status!=="Assigned"?"required":""}>
+        <button type="submit">${item.status==="Assigned"?"Start Work":"Record Progress"}</button>
+      </form>`:""}
+</div>
+          <div>    ${trainingManagerAuthorized(staff)&&!["Completed","Closed","Cancelled"].includes(item.status)?`
+      <form method="post" action="/work-routing/${item.id}/deadline" style="margin-top:8px">
+        <label>Due in hours <input type="number" name="hours" min="1" max="720" step="1" required></label>
+        <label>Warn minutes before due <input type="number" name="warning_minutes" min="1" step="1" required></label>
+        <input name="reason" maxlength="500" placeholder="Reason for setting / changing deadline" required>
+        <button type="submit">Set Deadline</button>
+      </form>`:""}
+</div>
+          <div>${trainingManagerAuthorized(staff)&&["Escalated","Escalation Required","Assigned","Deadline Warning","Overdue"].includes(item.status)?`
+      <form method="post" action="/work-routing/${item.id}/redirect" style="margin-top:8px">
+        <select name="target_staff_id" required>
+          <option value="">Redirect to active employee…</option>
+          ${staffOptions}
+        </select>
+        <input name="reason" maxlength="500" placeholder="Reason for redirect / override" required>
+        <button type="submit">Redirect Work</button>
+      </form>`:""}</div>
+        </div>
+      </details>
+
+    </div>`,"Task Details | FLTract Admin");
+}
+async function workRoutingPage(env, staff, notice="", params=new URLSearchParams()) {
+  const statuses=["Queued","Assigned","In Progress","Escalated","Escalation Required","Deadline Warning","Overdue","Completed","Closed","Cancelled"];
+  const selected=statuses.includes(params.get("status"))?params.get("status"):"";
+  const where=selected?"WHERE w.status=?":"";
+  const args=selected?[selected]:[];
+  const matched=await env.DB.prepare(`SELECT COUNT(*) total FROM flt_work_items w ${where}`).bind(...args).first();
+  const total=Number(matched?.total||0), pages=Math.max(1,Math.ceil(total/25));
+  const current=Math.max(1,Math.min(pages,Number.parseInt(params.get("page"),10)||1));
+  const pageUrl=n=>"/work-routing?"+new URLSearchParams({...(selected?{status:selected}:{}),page:String(n)}).toString();
   const items=await env.DB.prepare(`
-    SELECT w.*, q.property_id AS routing_property_id
-    FROM flt_work_items w
-    LEFT JOIN mini_comp_queue q ON w.subject_type='mini_comp_queue' AND w.subject_id=q.id
-    ORDER BY CASE w.status WHEN 'Queued' THEN 0 WHEN 'Assigned' THEN 1 WHEN 'In Progress' THEN 2 ELSE 3 END,
-    w.created_at DESC LIMIT 150
-  `).all();
+    SELECT w.* FROM flt_work_items w ${where}
+    ORDER BY CASE w.status WHEN 'Overdue' THEN 0 WHEN 'Deadline Warning' THEN 1 WHEN 'Queued' THEN 2 WHEN 'Assigned' THEN 3 WHEN 'In Progress' THEN 4 ELSE 5 END,
+    w.created_at DESC,w.id DESC LIMIT 25 OFFSET ?
+  `).bind(...args,(current-1)*25).all();
   const counts=await env.DB.prepare(`
     SELECT COUNT(*) total,
       SUM(CASE WHEN status='Queued' THEN 1 ELSE 0 END) queued,
@@ -2459,41 +2508,8 @@ async function workRoutingPage(env, staff, notice="") {
     <td>${esc(w.assigned_staff_email||"Unassigned")}</td>
     <td><span class="badge ${["Deadline Warning","Overdue"].includes(w.status)?"warning":w.status==="Assigned"?"good":"muted"}">${esc(w.status)}</span></td>
     <td class="small"><strong>Due:</strong> ${esc(workDeadlineDisplay(w.due_at))}<br><strong>Warning:</strong> ${esc(workDeadlineDisplay(w.warning_at))}</td>
-    </tr><tr class="work-detail-row"><td colspan="6">
-      <div class="task-navigation">
-        ${canActOnWork(staff,w)?`<a class="nav-button" href="/work-routing/${w.id}/history">Task History</a>`:""}
-        ${Number(w.routing_property_id)>0?`<a class="nav-button" href="/property/${Number(w.routing_property_id)}">Property Research</a><a class="nav-button" href="/property/${Number(w.routing_property_id)}/mini-comp">Mini-Comp Workspace</a>`:""}
-      </div>
-      <details class="task-controls"><summary>Task details and controls</summary>
-        <p class="small"><strong>Routing reason:</strong> ${esc(w.routing_reason||"None recorded")}</p>
-        <div class="task-control-grid">
-          <div>    ${canActOnWork(staff,w)&&["Assigned","In Progress","Deadline Warning","Overdue"].includes(w.status)?`
-      <form method="post" action="/work-routing/${w.id}/progress" style="margin-top:8px">
-        <input type="hidden" name="action" value="${w.status==="Assigned"?"start":"note"}">
-        <input name="note" maxlength="2000" placeholder="Progress note" ${w.status!=="Assigned"?"required":""}>
-        <button type="submit">${w.status==="Assigned"?"Start Work":"Record Progress"}</button>
-      </form>`:""}
-</div>
-          <div>    ${trainingManagerAuthorized(staff)&&!["Completed","Closed","Cancelled"].includes(w.status)?`
-      <form method="post" action="/work-routing/${w.id}/deadline" style="margin-top:8px">
-        <label>Due in hours <input type="number" name="hours" min="1" max="720" step="1" required></label>
-        <label>Warn minutes before due <input type="number" name="warning_minutes" min="1" step="1" required></label>
-        <input name="reason" maxlength="500" placeholder="Reason for setting / changing deadline" required>
-        <button type="submit">Set Deadline</button>
-      </form>`:""}
-</div>
-          <div>${trainingManagerAuthorized(staff)&&["Escalated","Escalation Required","Assigned","Deadline Warning","Overdue"].includes(w.status)?`
-      <form method="post" action="/work-routing/${w.id}/redirect" style="margin-top:8px">
-        <select name="target_staff_id" required>
-          <option value="">Redirect to active employee…</option>
-          ${staffOptions}
-        </select>
-        <input name="reason" maxlength="500" placeholder="Reason for redirect / override" required>
-        <button type="submit">Redirect Work</button>
-      </form>`:""}</div>
-        </div>
-      </details>
-    </td></tr>`).join(""):'<tr><td colspan="6" class="empty">No work items have been queued yet.</td></tr>';
+    <td>${canActOnWork(staff,w)?`<a class="nav-button" style="white-space:nowrap" href="/work-routing/${Number(w.id)}">Open Task</a>`:'<span class="small">Manager / assignee access</span>'}</td>
+    </tr>`).join(""):'<tr><td colspan="7" class="empty">No tasks match this filter.</td></tr>';
   return page(`<h1>Universal Work Routing</h1>
     ${notice?`<div class="panel" role="status">${esc(notice)}</div>`:""}
     <div class="panel"><h2>Routing Dashboard</h2>
@@ -2508,7 +2524,7 @@ async function workRoutingPage(env, staff, notice="") {
     </div>
     ${trainingManagerAuthorized(staff)?'<form method="post" action="/work-routing/run"><button type="submit">Route Queued Work</button></form><form method="post" action="/work-routing/check-deadlines" style="margin-top:8px"><button type="submit">Check Deadlines Now</button></form>':""}
     </div>
-    <div class="panel"><h2>Work Queue</h2><div class="work-queue-wrap"><table class="work-queue"><thead><tr><th>ID</th><th>Work / Module</th><th>Requirements</th><th>Assigned To</th><th>Status</th><th>Deadline</th></tr></thead><tbody>${rows}</tbody></table></div></div>
+    <div class="panel"><h2>Work Queue</h2><form method="get" class="action-row" style="margin-bottom:16px"><label>Status <select name="status"><option value="">All statuses</option>${statuses.map(s=>`<option value="${esc(s)}" ${s===selected?"selected":""}>${esc(s)}</option>`).join("")}</select></label><button type="submit">Apply Filter</button><a class="nav-button" href="/work-routing">Clear</a></form><div class="work-queue-wrap"><table class="work-queue"><thead><tr><th>ID</th><th>Work / Module</th><th>Requirements</th><th>Assigned To</th><th>Status</th><th>Deadline</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table></div><div class="action-row" style="margin-top:16px">${current>1?`<a class="nav-button" href="${esc(pageUrl(current-1))}">← Previous</a>`:""}<span class="small">Page ${current} of ${pages} · ${total} matching tasks · 25 per page</span>${current<pages?`<a class="nav-button" href="${esc(pageUrl(current+1))}">Next →</a>`:""}</div></div>
   `,"Universal Work Routing | FLTract Admin");
 }
 
@@ -3612,12 +3628,23 @@ if(request.method==="GET" && /^\/work-routing\/\d+\/history$/.test(url.pathname)
   return new Response(await workHistoryPage(env,item),{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"}});
 }
 
+
+if(request.method==="GET" && /^\/work-routing\/\d+$/.test(url.pathname)){
+  if(!staff?.authenticated || !staff?.user?.active) return await denyAndAudit(env,staff,request,"View Work Task");
+  const item=await env.DB.prepare(`SELECT w.*,q.property_id AS routing_property_id FROM flt_work_items w
+    LEFT JOIN mini_comp_queue q ON w.subject_type='mini_comp_queue' AND w.subject_id=q.id WHERE w.id=?`)
+    .bind(Number(url.pathname.split("/")[2])).first();
+  if(!item) return new Response("Work item not found.",{status:404});
+  if(!canActOnWork(staff,item)) return await denyAndAudit(env,staff,request,"View Work Task");
+  return new Response(await workTaskPage(env,staff,item),{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"}});
+}
+
 if(request.method==="GET" && url.pathname==="/work-routing"){
   if(!staff?.authenticated || !staff?.user?.active) return await denyAndAudit(env,staff,request,"View Work Routing");
   const count=key=>Math.max(0,Math.min(1000000,Number.parseInt(url.searchParams.get(key),10)||0));
   const action=url.searchParams.get("completed");
   const notice=action==="deadline-set"?"Deadline saved. Due and warning times are shown below.":action==="progress"?"Progress update processed. Current task state is shown below.":action==="routing"?`Routing completed: ${count("assigned")} assigned; ${count("held")} escalated for management review.`:action==="deadlines"?`Deadline check completed: ${count("checked")} items checked; ${count("warned")} warnings; ${count("overdue")} overdue; ${count("escalated")} escalations.`:"";
-  return new Response(await workRoutingPage(env,staff,notice),{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"}});
+  return new Response(await workRoutingPage(env,staff,notice,url.searchParams),{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"}});
 }
 
 if(request.method==="POST" && /^\/work-routing\/\d+\/progress$/.test(url.pathname)){
