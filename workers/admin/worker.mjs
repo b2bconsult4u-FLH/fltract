@@ -2422,7 +2422,7 @@ async function workHistoryPage(env, item) {
       <td style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(event.reason||"")}</td></tr>`;
   }).join("");
   return page(`<h1>Task #${Number(item.id)} History</h1>
-    <p><a href="/work-routing">← Work Routing</a></p>
+    <p><a class="nav-button" href="/work-routing">← Work Routing</a></p>
     <div class="panel"><h2>${esc(item.title||item.work_type)}</h2>
       <p>Status: <strong>${esc(item.status)}</strong> · Assigned to: ${esc(item.assigned_staff_email||"Unassigned")}</p>
       <p>Due: ${esc(workDeadlineDisplay(item.due_at))}<br>Warning: ${esc(workDeadlineDisplay(item.warning_at))}</p>
@@ -2453,7 +2453,7 @@ async function workRoutingPage(env, staff, notice="") {
     FROM flt_work_items
   `).first();
   const rows=items.results.length?items.results.map(w=>`<tr>
-    <td>#${w.id}${canActOnWork(staff,w)?`<div style="margin-top:8px"><a href="/work-routing/${w.id}/history">Task History</a></div>`:""}</td><td>${esc(w.title||w.work_type)}${Number(w.routing_property_id)>0?`<div style="margin-top:8px"><a href="/property/${Number(w.routing_property_id)}">Open Property Research</a><br><a href="/property/${Number(w.routing_property_id)}/mini-comp">Open Mini-Comp Workspace</a></div>`:""}</td><td>${esc(w.module_key)}</td>
+    <td>#${w.id}${canActOnWork(staff,w)?`<div style="margin-top:8px"><a class="nav-button" href="/work-routing/${w.id}/history">Task History</a></div>`:""}</td><td>${esc(w.title||w.work_type)}${Number(w.routing_property_id)>0?`<div class="work-nav"><a class="nav-button" href="/property/${Number(w.routing_property_id)}">Open Property Research</a><a class="nav-button" href="/property/${Number(w.routing_property_id)}/mini-comp">Open Mini-Comp Workspace</a></div>`:""}</td><td>${esc(w.module_key)}</td>
     <td><span class="badge">${esc(w.priority)}</span></td><td>${esc(w.required_role)}</td>
     <td>${esc(w.required_competency||"None")}</td><td>${esc(w.assigned_staff_email||"Unassigned")}</td>
     <td><span class="badge ${w.status==="Queued"?"warning":w.status==="Assigned"?"good":"muted"}">${esc(w.status)}</span>
@@ -3257,6 +3257,29 @@ label span{
   text-align:center;
   color:var(--muted);
 }
+
+
+.nav-button{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-height:44px;
+  padding:9px 12px;
+  border:2px solid var(--green);
+  border-radius:6px;
+  background:#fff;
+  color:var(--green);
+  font-weight:700;
+  font-size:.88rem;
+  line-height:1.3;
+  text-decoration:none;
+  text-align:center;
+  box-sizing:border-box;
+}
+.nav-button:hover{background:var(--green);color:#fff;text-decoration:none;}
+.nav-button:focus-visible{outline:3px solid var(--gold);outline-offset:3px;}
+.work-nav{display:flex;flex-direction:column;align-items:flex-start;gap:8px;margin-top:10px;min-width:145px;}
+.work-nav .nav-button{width:100%;}
 
 .back{
   display:inline-block;
