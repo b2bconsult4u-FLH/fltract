@@ -1886,6 +1886,69 @@ html:`<div style="font-family:Arial,sans-serif;white-space:pre-wrap">${esc(body)
    WORKER
    ============================================================ */
 
+function roleCanReceiveWork(userRole, requiredRole) {
+  const rank={"employee":1,"mid-level manager":2,"manager":2,"cfo admin assistant":2,"cfo":3,"ceo":4,"administrator":5,"admin":5,"developer":5};
+  return (rank[String(userRole||"").toLowerCase()]||0) >= (rank[String(requiredRole||"Employee").toLowerCase()]||1);
+}
+
+async function ensureWorkDeadlineColumns(env) {
+  const cols=await env.DB.prepare("PRAGMA table_info(flt_work_items)").all();
+  const names=new Set(cols.results.map(c=>c.name));
+  const adds=[
+    ["due_at","TEXT"],["warning_at","TEXT"],["sla_minutes","INTEGER"],
+    ["deadline_type","TEXT NOT NULL DEFAULT 'Operational'"],
+    ["escalation_level","INTEGER NOT NULL DEFAULT 0"],["last_deadline_check_at","TEXT"]
+  ];
+  for(const [name,type] of adds) if(!names.has(name)) await env.DB.prepare(`ALTER TABLE flt_work_items ADD COLUMN ${name} ${type}`).run();
+}
+
+async function checkWorkDeadlines(env, performedBy="FLTract SLA Monitor") {
+  await ensureWorkDeadlineColumns(env);
+  const now=new Date();
+  const rows=await env.DB.prepare(`
+    SELECT * FROM flt_work_items
+    WHERE status NOT IN ('Completed','Closed','Cancelled')
+      AND due_at IS NOT NULL AND TRIM(due_at)<>''
+    ORDER BY due_at LIMIT 250
+  `).all();
+  const staff=await env.DB.prepare(`SELECT * FROM staff_users WHERE active=1 ORDER BY id`).all();
+  let warned=0,escalated=0,overdue=0;
+  for(const item of rows.results){
+    const due=new Date(item.due_at);
+    if(Number.isNaN(due.getTime())) continue;
+    const warning=item.warning_at?new Date(item.warning_at):new Date(due.getTime()-Math.max(30,Number(item.sla_minutes||120)*0.25)*60000);
+    let eventType="",reason="",level=Number(item.escalation_level||0);
+    if(now>=due && level<2){
+      eventType="Deadline Overdue"; reason=`Work deadline passed at ${item.due_at}. Immediate management intervention required.`; level=2;
+    } else if(now>=warning && level<1){
+      eventType="Deadline Warning"; reason=`Work is approaching its deadline of ${item.due_at}. Escalated before lateness.`; level=1;
+    } else { await env.DB.prepare(`UPDATE flt_work_items SET last_deadline_check_at=CURRENT_TIMESTAMP WHERE id=?`).bind(item.id).run(); continue; }
+
+    const managers=staff.results.filter(u=>roleCanReceiveWork(u.role,"Manager"));
+    const manager=managers[0]||null;
+    const newStatus=eventType==="Deadline Overdue"?"Overdue":(item.status==="Escalated"?"Escalated":"Deadline Warning");
+    // Audit and update share a transaction and compare the original deadline/state.
+    const result=await env.DB.batch([
+      env.DB.prepare(`INSERT INTO flt_work_routing_events(work_item_id,event_type,from_staff_email,to_staff_email,reason,performed_by)
+        SELECT id,?,assigned_staff_email,?,?,? FROM flt_work_items
+        WHERE id=? AND status=? AND due_at IS ? AND warning_at IS ? AND escalation_level=?`)
+        .bind(eventType,manager?.email||"",reason,performedBy,item.id,item.status,item.due_at,item.warning_at,Number(item.escalation_level||0)),
+      env.DB.prepare(`UPDATE flt_work_items SET status=?,escalation_level=?,last_deadline_check_at=CURRENT_TIMESTAMP,
+        assigned_staff_user_id=COALESCE(?,assigned_staff_user_id),
+        assigned_staff_email=CASE WHEN ?<>'' THEN ? ELSE assigned_staff_email END,
+        routing_reason=? WHERE id=? AND status=? AND due_at IS ? AND warning_at IS ? AND escalation_level=?`)
+        .bind(newStatus,level,manager?.id||null,manager?.email||"",manager?.email||"",reason,
+          item.id,item.status,item.due_at,item.warning_at,Number(item.escalation_level||0))
+    ]);
+    if(result[1]?.meta?.changes){
+      if(eventType==="Deadline Overdue") overdue++; else warned++;
+      if(manager) escalated++;
+    }
+  }
+  return {checked:rows.results.length,warned,overdue,escalated};
+}
+
+
 export default {
 
 async fetch(request, env) {
@@ -2210,11 +2273,6 @@ async function reviewTrainingSession(env, sessionId, decision, note, staff) {
   }
 }
 
-function roleCanReceiveWork(userRole, requiredRole) {
-  const rank={"employee":1,"mid-level manager":2,"manager":2,"cfo admin assistant":2,"cfo":3,"ceo":4,"administrator":5,"admin":5,"developer":5};
-  return (rank[String(userRole||"").toLowerCase()]||0) >= (rank[String(requiredRole||"Employee").toLowerCase()]||1);
-}
-
 async function staffHasCompetency(env, staffUser, competencyKey) {
   if(!competencyKey) return true;
   const row=await env.DB.prepare(`
@@ -2304,7 +2362,7 @@ async function routeQueuedWork(env, performedBy="FLTract Router") {
     const pick=candidates[0].user;
     const reason=`Eligible role ${pick.role}; competency requirement ${item.required_competency||"none"}; lowest eligible active workload.`;
     await env.DB.prepare(`
-      UPDATE flt_work_items SET status='Assigned',assigned_staff_user_id=?,assigned_staff_email=?,
+      UPDATE flt_work_items SET status=CASE WHEN status IN ('Deadline Warning','Overdue') THEN status ELSE 'Assigned' END,assigned_staff_user_id=?,assigned_staff_email=?,
         routing_reason=?,assigned_at=CURRENT_TIMESTAMP WHERE id=? AND status='Queued'
     `).bind(pick.id,pick.email||"",reason,item.id).run();
     await env.DB.prepare(`
@@ -2376,10 +2434,10 @@ async function workRoutingPage(env, staff, notice="") {
     <td><span class="badge">${esc(w.priority)}</span></td><td>${esc(w.required_role)}</td>
     <td>${esc(w.required_competency||"None")}</td><td>${esc(w.assigned_staff_email||"Unassigned")}</td>
     <td><span class="badge ${w.status==="Queued"?"warning":w.status==="Assigned"?"good":"muted"}">${esc(w.status)}</span>
-    ${canActOnWork(staff,w)&&["Assigned","In Progress"].includes(w.status)?`
+    ${canActOnWork(staff,w)&&["Assigned","In Progress","Deadline Warning","Overdue"].includes(w.status)?`
       <form method="post" action="/work-routing/${w.id}/progress" style="margin-top:8px">
         <input type="hidden" name="action" value="${w.status==="Assigned"?"start":"note"}">
-        <input name="note" maxlength="2000" placeholder="Progress note" ${w.status==="In Progress"?"required":""}>
+        <input name="note" maxlength="2000" placeholder="Progress note" ${w.status!=="Assigned"?"required":""}>
         <button type="submit">${w.status==="Assigned"?"Start Work":"Record Progress"}</button>
       </form>`:""}</td>
     <td class="small">Due: ${esc(workDeadlineDisplay(w.due_at))}<br>Warning: ${esc(workDeadlineDisplay(w.warning_at))}
@@ -2390,7 +2448,7 @@ async function workRoutingPage(env, staff, notice="") {
         <input name="reason" maxlength="500" placeholder="Reason for setting / changing deadline" required>
         <button type="submit">Set Deadline</button>
       </form>`:""}</td>
-    <td class="small">${esc(w.routing_reason||"")}${trainingManagerAuthorized(staff)&&["Escalated","Escalation Required","Assigned"].includes(w.status)?`
+    <td class="small">${esc(w.routing_reason||"")}${trainingManagerAuthorized(staff)&&["Escalated","Escalation Required","Assigned","Deadline Warning","Overdue"].includes(w.status)?`
       <form method="post" action="/work-routing/${w.id}/redirect" style="margin-top:8px">
         <select name="target_staff_id" required>
           <option value="">Redirect to active employee…</option>
@@ -2417,62 +2475,11 @@ async function workRoutingPage(env, staff, notice="") {
   `,"Universal Work Routing | FLTract Admin");
 }
 
-async function ensureWorkDeadlineColumns(env) {
-  const cols=await env.DB.prepare("PRAGMA table_info(flt_work_items)").all();
-  const names=new Set(cols.results.map(c=>c.name));
-  const adds=[
-    ["due_at","TEXT"],["warning_at","TEXT"],["sla_minutes","INTEGER"],
-    ["deadline_type","TEXT NOT NULL DEFAULT 'Operational'"],
-    ["escalation_level","INTEGER NOT NULL DEFAULT 0"],["last_deadline_check_at","TEXT"]
-  ];
-  for(const [name,type] of adds) if(!names.has(name)) await env.DB.prepare(`ALTER TABLE flt_work_items ADD COLUMN ${name} ${type}`).run();
-}
-
-async function checkWorkDeadlines(env, performedBy="FLTract SLA Monitor") {
-  await ensureWorkDeadlineColumns(env);
-  const now=new Date();
-  const rows=await env.DB.prepare(`
-    SELECT * FROM flt_work_items
-    WHERE status NOT IN ('Completed','Closed','Cancelled')
-      AND due_at IS NOT NULL AND TRIM(due_at)<>''
-    ORDER BY due_at LIMIT 250
-  `).all();
-  const staff=await env.DB.prepare(`SELECT * FROM staff_users WHERE active=1 ORDER BY id`).all();
-  let warned=0,escalated=0,overdue=0;
-  for(const item of rows.results){
-    const due=new Date(item.due_at);
-    if(Number.isNaN(due.getTime())) continue;
-    const warning=item.warning_at?new Date(item.warning_at):new Date(due.getTime()-Math.max(30,Number(item.sla_minutes||120)*0.25)*60000);
-    let eventType="",reason="",level=Number(item.escalation_level||0);
-    if(now>=due && level<2){
-      eventType="Deadline Overdue"; reason=`Work deadline passed at ${item.due_at}. Immediate management intervention required.`; level=2; overdue++;
-    } else if(now>=warning && level<1){
-      eventType="Deadline Warning"; reason=`Work is approaching its deadline of ${item.due_at}. Escalated before lateness.`; level=1; warned++;
-    } else { await env.DB.prepare(`UPDATE flt_work_items SET last_deadline_check_at=CURRENT_TIMESTAMP WHERE id=?`).bind(item.id).run(); continue; }
-
-    const managers=staff.results.filter(u=>roleCanReceiveWork(u.role,"Manager"));
-    const manager=managers[0]||null;
-    const newStatus=eventType==="Deadline Overdue"?"Overdue":(item.status==="Escalated"?"Escalated":"Deadline Warning");
-    await env.DB.prepare(`
-      UPDATE flt_work_items SET status=?,escalation_level=?,last_deadline_check_at=CURRENT_TIMESTAMP,
-        assigned_staff_user_id=COALESCE(?,assigned_staff_user_id),
-        assigned_staff_email=CASE WHEN ?<>'' THEN ? ELSE assigned_staff_email END,
-        routing_reason=? WHERE id=?
-    `).bind(newStatus,level,manager?.id||null,manager?.email||"",manager?.email||"",reason,item.id).run();
-    await env.DB.prepare(`
-      INSERT INTO flt_work_routing_events(work_item_id,event_type,from_staff_email,to_staff_email,reason,performed_by)
-      VALUES (?,?,?,?,?,?)
-    `).bind(item.id,eventType,item.assigned_staff_email||"",manager?.email||"",reason,performedBy).run();
-    escalated++;
-  }
-  return {checked:rows.results.length,warned,overdue,escalated};
-}
-
 async function managerRedirectWork(env, workItemId, targetStaffId, reason, staff) {
   if(!trainingManagerAuthorized(staff)) throw new Error("Manager authorization required.");
   const item=await env.DB.prepare(`SELECT * FROM flt_work_items WHERE id=? LIMIT 1`).bind(workItemId).first();
   if(!item) throw new Error("Work item not found.");
-  if(!["Escalated","Escalation Required","Assigned"].includes(item.status)) throw new Error("This work item is not eligible for manager redirect.");
+  if(!["Escalated","Escalation Required","Assigned","Deadline Warning","Overdue"].includes(item.status)) throw new Error("This work item is not eligible for manager redirect.");
   const target=await env.DB.prepare(`SELECT * FROM staff_users WHERE id=? AND active=1 LIMIT 1`).bind(targetStaffId).first();
   if(!target) throw new Error("Target employee is not active or does not exist.");
 
@@ -3537,7 +3544,7 @@ if(request.method==="POST" && /^\/work-routing\/\d+\/progress$/.test(url.pathnam
   const form=await request.formData();
   const action=String(form.get("action")||"");
   const note=String(form.get("note")||"").trim().slice(0,2000);
-  if(!["start","note"].includes(action) || (action==="start" && item.status!=="Assigned") || (action==="note" && item.status!=="In Progress"))
+  if(!["start","note"].includes(action) || (action==="start" && item.status!=="Assigned") || (action==="note" && !["In Progress","Deadline Warning","Overdue"].includes(item.status)))
     return new Response("Work state changed or action is unavailable. Refresh Work Routing.",{status:409});
   if(action==="note" && !note) return new Response("A progress note is required.",{status:400});
   await env.DB.batch([
@@ -10091,17 +10098,15 @@ headers:{
 },
 
 async scheduled(controller, env, ctx) {
-
-ctx.waitUntil(
-sendDailyFollowupReminder(env)
-.catch(error => {
-console.error(
-"Daily FLTract follow-up reminder failed:",
-error
-);
-})
-);
-
+  if(controller.cron==="*/5 * * * *"){
+    ctx.waitUntil((async()=>{
+      await ensureClientSchema(env);
+      const result=await checkWorkDeadlines(env);
+      console.log("FLTract scheduled deadline check",JSON.stringify(result));
+    })());
+  }
+  if(controller.cron==="0 13 * * *"){
+    ctx.waitUntil(sendDailyFollowupReminder(env));
+  }
 }
-
 };
