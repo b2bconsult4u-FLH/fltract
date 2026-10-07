@@ -2508,7 +2508,7 @@ async function workRoutingPage(env, staff, notice="", params=new URLSearchParams
     <td><strong>${esc(w.title||w.work_type)}</strong><div class="small">${esc(w.module_key)}</div></td>
     <td><span class="badge">${esc(w.priority)}</span><div class="small">${esc(w.required_role)} · ${esc(w.required_competency||"No competency required")}</div></td>
     <td>${esc(w.assigned_staff_email||"Unassigned")}</td>
-    <td><span class="badge ${["Deadline Warning","Overdue"].includes(w.status)?"warning":w.status==="Assigned"?"good":"muted"}">${esc(w.status)}</span></td>
+    <td><span class="badge ${w.status==="Overdue"?"danger overdue":w.status==="Deadline Warning"?"warning":w.status==="Assigned"?"good":"muted"}">${esc(w.status)}</span></td>
     <td class="small"><strong>Due:</strong> ${esc(workDeadlineDisplay(w.due_at))}<br><strong>Warning:</strong> ${esc(workDeadlineDisplay(w.warning_at))}</td>
     <td>${canActOnWork(staff,w)?`<a class="nav-button" style="white-space:nowrap" href="/work-routing/${Number(w.id)}">Open Task</a>`:'<span class="small">Manager / assignee access</span>'}</td>
     </tr>`).join(""):'<tr><td colspan="7" class="empty">No tasks match this filter.</td></tr>';
@@ -3183,6 +3183,8 @@ a{
   background:#fde8e8;
   color:var(--danger);
 }
+
+.badge.overdue{white-space:nowrap;}
 
 .badge.muted{
   background:#ecefed;
