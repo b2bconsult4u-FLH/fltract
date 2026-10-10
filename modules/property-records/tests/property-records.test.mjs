@@ -188,7 +188,7 @@ function coreDb() {
 }
 function submission() {
   return new Request('https://intake.example/submit', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://fltract.com' }, body: JSON.stringify({
-    inquiry_type: 'Selling Property I Own', county: 'Indian River', property_type: 'Vacant / Acreage',
+    inquiry_type: 'Selling Property', county: 'Indian River', property_type: 'Vacant / Acreage',
     property_location: 'SYNTHETIC TEST ADDRESS', first_name: 'Synthetic', last_name: 'Test', email: 'synthetic@example.invalid',
     preferred_contact: 'Email', rights_acknowledged: true, relationship_acknowledged: true
   }) });
@@ -200,7 +200,7 @@ test('replacement intake succeeds when optional module is absent or unavailable,
     const result = await response.json();
     assert.equal(response.status, 201);
     assert.equal(result.ok, true);
-    assert.equal(result.property_research.status, enabled ? 'unavailable' : 'disabled');
+    assert.equal(result.inquiry_id, 1); // Optional research is fail-open and not part of the public response.
     assert.equal(attemptedReceipts, 1); // Stub only; no mail leaves this test.
     assert.equal(db.statements.filter(sql => sql.includes('INSERT INTO inquiries')).length, 1);
   }
@@ -208,8 +208,7 @@ test('replacement intake succeeds when optional module is absent or unavailable,
 test('removing the module hook/import leaves a working core Worker', async () => {
   const source = readFileSync(new URL('../../../workers/intake/worker.mjs', import.meta.url), 'utf8')
     .replace(/^import.*afterInquirySaved.*\n/m, '')
-    .replace('    const propertyResearch = await afterInquirySaved({ inquiryId, input, env, ctx });', '')
-    .replace('        property_research: propertyResearch,', '');
+    .replace(/    \/\/ Optional, fail-open county research;[\s\S]*?    \/\* --------------------------------------------------------\*\n\*       LINK CLIENT ACCOUNT/, '    /* --------------------------------------------------------*\\n*       LINK CLIENT ACCOUNT');
   const stripped = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
   const response = await stripped.default.fetch(submission(), { DB: coreDb(), SEND_EMAIL: { async send() { return {}; } } });
   assert.equal(response.status, 201);
