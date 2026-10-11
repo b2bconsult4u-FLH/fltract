@@ -7,6 +7,7 @@ on:
     paths:
       - 'modules/property-records/**'
       - 'workers/intake/**'
+      - 'workers/admin/**'
       - 'contact/**'
       - '.github/workflows/fltract-foundation-tests.yml'
   workflow_dispatch:
@@ -20,5 +21,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Check admin Worker syntax
+        run: node --check workers/admin/worker.mjs
       - name: Run property-record and intake-contract tests
         run: node --test modules/property-records/tests/*.test.mjs

@@ -3566,6 +3566,49 @@ Number(r.rule_value) || 90;
 
 
 /* ============================================================
+   MILESTONE B — MANAGER INTAKE RECOVERY COMMAND CENTER
+   ============================================================ */
+if (request.method === "GET" && url.pathname === "/intake-recovery") {
+  if (!staff.authenticated || !staff.user?.active ||
+      !roleCanReceiveWork(staff.user.role, "Manager")) {
+    await logStaffAccess(env, staff, request, "Intake Recovery", "Denied");
+    return new Response("Manager access required.", {status: 403});
+  }
+  const rows = await env.DB.prepare(`
+    SELECT q.inquiry_id, q.status, q.attempts, q.last_error, q.updated_at,
+           i.first_name, i.last_name, i.county, i.property_location,
+           w.id AS work_item_id, w.status AS work_status
+    FROM intake_recovery_queue q
+    LEFT JOIN inquiries i ON i.id = q.inquiry_id
+    LEFT JOIN flt_work_items w ON w.id = (
+      SELECT MAX(w2.id) FROM flt_work_items w2
+      WHERE w2.work_type = 'Intake Recovery'
+        AND w2.subject_type = 'inquiry'
+        AND w2.subject_id = q.inquiry_id
+    )
+    ORDER BY CASE WHEN q.status = 'Resolved' THEN 1 ELSE 0 END,
+             q.updated_at DESC LIMIT 100
+  `).all();
+  const records = (rows.results || []).map(r => `<tr>
+    <td>#${Number(r.inquiry_id)}</td>
+    <td>${esc(r.first_name)} ${esc(r.last_name)}</td>
+    <td>${esc(r.county)} / ${esc(r.property_location)}</td>
+    <td>${esc(r.status)}</td><td>${Number(r.attempts)}</td>
+    <td>${esc(r.last_error)}</td>
+    <td>${r.work_item_id ? `<a href="/work-routing/${Number(r.work_item_id)}">Open task</a>` : "—"}</td>
+    <td>${esc(floridaTime(r.updated_at))}</td></tr>`).join("");
+  return new Response(page(`<h1>Intake Recovery Operations</h1>
+    <p>Automated recovery runs every 15 minutes. Failed attempts remain visible for manager review.</p>
+    <div class="panel"><table><thead><tr><th>Inquiry</th><th>Client</th><th>Property</th>
+    <th>Recovery status</th><th>Attempts</th><th>Last error</th><th>Manager task</th>
+    <th>Updated (Eastern)</th></tr></thead>
+    <tbody>${records || '<tr><td colspan="8">No intake recovery records.</td></tr>'}</tbody>
+    </table></div>`, "Intake Recovery | FLTract Admin"), {
+    headers: {"content-type":"text/html; charset=utf-8", "cache-control":"no-store"}
+  });
+}
+
+/* ============================================================
    SECURITY / AUDIT
    ============================================================ */
 
