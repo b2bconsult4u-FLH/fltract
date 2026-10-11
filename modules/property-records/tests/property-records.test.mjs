@@ -222,13 +222,20 @@ test('removing the module hook/import leaves a working core Worker', async () =>
 
 test('fail-safe persists a recoverable inquiry in real SQLite when client linking fails', async () => {
   const sqlite = new DatabaseSync(':memory:');
+  sqlite.exec(`CREATE TABLE flt_work_items (
+    id INTEGER PRIMARY KEY, work_type TEXT NOT NULL, module_key TEXT NOT NULL,
+    subject_type TEXT NOT NULL, subject_id INTEGER, title TEXT NOT NULL,
+    priority TEXT NOT NULL, status TEXT NOT NULL, required_role TEXT NOT NULL,
+    routing_reason TEXT NOT NULL, created_by TEXT NOT NULL,
+    due_at TEXT, warning_at TEXT, sla_minutes INTEGER
+  )`);
   const base = coreDb();
   const db = {
     statements: base.statements,
     prepare(sql) {
-      if (/intake_recovery_queue/.test(sql)) {
+      if (/intake_recovery_queue|flt_work_items/.test(sql)) {
         const stmt = sqlite.prepare(sql);
-        return { bind(...args) { return { async run() {
+        return { bind(...args) { return { async first() { return stmt.get(...args) ?? null; }, async run() {
           const result = stmt.run(...args);
           return { meta: { last_row_id: Number(result.lastInsertRowid) } };
         } }; }, async run() { stmt.run(); return { success: true }; } };
@@ -251,6 +258,11 @@ test('fail-safe persists a recoverable inquiry in real SQLite when client linkin
   const saved = sqlite.prepare('SELECT inquiry_id, status, last_error FROM intake_recovery_queue').get();
   assert.equal(saved.inquiry_id, 1);
   assert.equal(saved.status, 'Needs Manager Review');
+  const managerTask = sqlite.prepare('SELECT * FROM flt_work_items').get();
+  assert.equal(managerTask.subject_id, 1);
+  assert.equal(managerTask.required_role, 'Manager');
+  assert.equal(managerTask.priority, 'Critical');
+  assert.equal(managerTask.sla_minutes, 60);
   assert.match(saved.last_error, /SIMULATED_CLIENT_LINK_OUTAGE/);
   assert.equal(db.statements.filter(sql => sql.includes('INSERT INTO inquiries')).length, 1);
   sqlite.close();
