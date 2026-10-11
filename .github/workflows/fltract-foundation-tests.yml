@@ -23,6 +23,8 @@ jobs:
           node-version: '22'
       - name: Check admin Worker syntax
         run: node --check workers/admin/worker.mjs
+      - name: Run manager recovery access acceptance tests
+        run: node --test modules/property-records/tests/group1-manager-access.test.mjs
       - name: Run autonomous recovery tests (isolated, no production writes)
         run: node --test modules/property-records/tests/milestone-c-recovery.test.mjs
       - name: Run property-record and intake-contract tests
