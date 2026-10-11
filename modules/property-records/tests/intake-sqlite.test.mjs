@@ -12,6 +12,7 @@ function isolatedDb() {
   const columns = match[1].split(',').map(v => v.trim());
   assert.ok(columns.every(v => /^[a-z_]+$/.test(v)));
   sqlite.exec('CREATE TABLE inquiries (id INTEGER PRIMARY KEY AUTOINCREMENT, ' + columns.map(v => v + ' TEXT').join(', ') + ')');
+  sqlite.exec(`CREATE TABLE consent_history (id INTEGER PRIMARY KEY, inquiry_id INTEGER, event_type TEXT, channel TEXT, purpose TEXT, permission_granted INTEGER, consent_version TEXT, contact_value TEXT, source TEXT, event_note TEXT); CREATE TABLE activity_log (id INTEGER PRIMARY KEY, inquiry_id INTEGER, activity_type TEXT, activity_note TEXT); CREATE TABLE email_log (id INTEGER PRIMARY KEY AUTOINCREMENT, inquiry_id INTEGER, email_type TEXT, recipient TEXT, subject TEXT, status TEXT, provider_message_id TEXT, sent_at TEXT, failure_reason TEXT);`);
   const db = {
     sqlite,
     prepare(sql) {
