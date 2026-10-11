@@ -199,8 +199,8 @@ test('replacement intake succeeds when optional module is absent or unavailable,
     const response = await intake.fetch(submission(), { DB: db, PROPERTY_RECORDS_ENABLED: enabled, SEND_EMAIL: { async send() { attemptedReceipts++; return {}; } } });
     const result = await response.json();
     assert.equal(response.status, 202); // Stub cannot link client/property; inquiry is safely retained.
-    assert.equal(result.account_processing_status, 'pending_recovery');
-    assert.equal(result.recovery_recorded, true);
+    assert.equal(result.account_processing_status, 'requires_manual_reconciliation');
+    assert.equal(result.recovery_recorded, false); // Core DB stub has no recovery-queue support.
     assert.equal(result.ok, true);
     assert.equal(result.inquiry_id, 1); // Optional research is fail-open and not part of the public response.
     assert.equal(attemptedReceipts, 2); // Customer receipt and internal notification; stub only, no mail leaves this test.
@@ -215,7 +215,7 @@ test('removing the module hook/import leaves a working core Worker', async () =>
   const response = await stripped.default.fetch(submission(), { DB: coreDb(), SEND_EMAIL: { async send() { return {}; } } });
   assert.equal(response.status, 202);
   const body = await response.json();
-  assert.equal(body.account_processing_status, 'pending_recovery');
-  assert.equal(body.recovery_recorded, true);
+  assert.equal(body.account_processing_status, 'requires_manual_reconciliation');
+  assert.equal(body.recovery_recorded, false);
   assert.equal(body.property_research, undefined);
 });
