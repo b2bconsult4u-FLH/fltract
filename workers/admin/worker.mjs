@@ -3761,6 +3761,7 @@ if(request.method==="POST" && /^\/work-routing\/\d+\/deadline$/.test(url.pathnam
   if(!trainingManagerAuthorized(staff)) return await denyAndAudit(env,staff,request,"Set Work Deadline");
   const item=await env.DB.prepare("SELECT * FROM flt_work_items WHERE id=?").bind(Number(url.pathname.split("/")[2])).first();
   if(!item) return new Response("Work item not found.",{status:404});
+  if(!(await canAccessWorkRecord(env,staff,item))) return await denyAndAudit(env,staff,request,"Set Other Team Deadline");
   if(["Completed","Closed","Cancelled"].includes(item.status)) return new Response("Completed or closed work cannot receive a deadline.",{status:409});
   const form=await request.formData();
   const reason=String(form.get("reason")||"").trim().slice(0,500);
@@ -3785,7 +3786,7 @@ if(request.method==="POST" && /^\/work-routing\/\d+\/deadline$/.test(url.pathnam
 
 if(request.method==="POST" && url.pathname==="/work-routing/check-deadlines"){
   if(!sameOriginPost(request)) return new Response("Invalid request origin.",{status:403});
-  if(!trainingManagerAuthorized(staff)) return await denyAndAudit(env,staff,request,"Check Work Deadlines");
+  if(!staff?.authenticated || !staff?.user?.active || !["Administrator","CEO"].includes(staff.user.role)) return await denyAndAudit(env,staff,request,"Check Work Deadlines - Executive Only");
   const result=await checkWorkDeadlines(env,staff.email||"Authorized Manager");
   return redirect(`/work-routing?completed=deadlines&checked=${result.checked}&warned=${result.warned}&overdue=${result.overdue}&escalated=${result.escalated}`);
 }
@@ -3810,7 +3811,7 @@ if(request.method==="POST" && /^\/work-routing\/\d+\/redirect$/.test(url.pathnam
 
 if(request.method==="POST" && url.pathname==="/work-routing/run"){
   if(!sameOriginPost(request)) return new Response("Invalid request origin.",{status:403});
-  if(!trainingManagerAuthorized(staff)) return await denyAndAudit(env,staff,request,"Run Work Routing");
+  if(!staff?.authenticated || !staff?.user?.active || !["Administrator","CEO"].includes(staff.user.role)) return await denyAndAudit(env,staff,request,"Run Work Routing - Executive Only");
   const result=await routeQueuedWork(env,staff.email||"Authorized Manager");
   return redirect(`/work-routing?completed=routing&assigned=${result.assigned}&held=${result.held}`);
 }
