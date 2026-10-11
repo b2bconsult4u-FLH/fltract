@@ -1325,14 +1325,54 @@ const STAFF_ROLES = [
   "Employee"
 ];
 
-function accessIdentity(request) {
-  return String(
-    request.headers.get("Cf-Access-Authenticated-User-Email") || ""
-  ).trim().toLowerCase();
+// Verify Cloudflare Access JWT cryptographically. The email header alone is
+// user-controllable when a Worker is reachable outside Access and is NEVER proof
+// of authentication.
+const ACCESS_ISSUER = "https://b2bconsult4u.cloudflareaccess.com";
+const ACCESS_AUDIENCE = "4312260f76753fb5e3464d1696f75069a27536a21048ae819ac63e79b46f198b";
+let accessKeysCache = { expires: 0, keys: [] };
+function accessBase64Url(value) {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const bytes = atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "="));
+  return Uint8Array.from(bytes, c => c.charCodeAt(0));
+}
+async function accessIdentity(request) {
+  try {
+    const token = request.headers.get("Cf-Access-Jwt-Assertion");
+    if (!token || token.length > 12000) return "";
+    const parts = token.split(".");
+    if (parts.length !== 3) return "";
+    const header = JSON.parse(new TextDecoder().decode(accessBase64Url(parts[0])));
+    const payload = JSON.parse(new TextDecoder().decode(accessBase64Url(parts[1])));
+    const now = Math.floor(Date.now() / 1000);
+    if (header.alg !== "RS256" || !header.kid || payload.iss !== ACCESS_ISSUER ||
+        !Array.isArray(payload.aud) || !payload.aud.includes(ACCESS_AUDIENCE) ||
+        !Number.isFinite(payload.exp) || payload.exp <= now ||
+        !Number.isFinite(payload.iat) || payload.iat > now + 60 ||
+        (payload.nbf !== undefined && payload.nbf > now + 60)) return "";
+    if (Date.now() > accessKeysCache.expires) {
+      const response = await fetch(ACCESS_ISSUER + "/cdn-cgi/access/certs", {
+        signal: AbortSignal.timeout(4000)
+      });
+      if (!response.ok) return "";
+      const certs = await response.json();
+      accessKeysCache = { expires: Date.now() + 300000, keys: certs.keys || [] };
+    }
+    const jwk = accessKeysCache.keys.find(key => key.kid === header.kid);
+    if (!jwk) return "";
+    const key = await crypto.subtle.importKey("jwk", jwk, {
+      name: "RSASSA-PKCS1-v1_5", hash: "SHA-256"
+    }, false, ["verify"]);
+    const signed = new TextEncoder().encode(parts[0] + "." + parts[1]);
+    const valid = await crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, accessBase64Url(parts[2]), signed);
+    return valid && typeof payload.email === "string" ? payload.email.trim().toLowerCase() : "";
+  } catch {
+    return "";
+  }
 }
 
 async function staffContext(env, request) {
-  const email = accessIdentity(request);
+  const email = await accessIdentity(request);
   if (!email) {
     return {authenticated:false, email:"", user:null};
   }
@@ -2374,9 +2414,29 @@ async function routeQueuedWork(env, performedBy="FLTract Router") {
   return {assigned,held};
 }
 
+async function canAccessWorkRecord(env, staff, item) {
+  if (!staff?.authenticated || !staff?.user?.active || !item) return false;
+  const role = String(staff.user.role || "").toLowerCase();
+  if (["administrator", "admin", "developer", "ceo"].includes(role)) return true;
+  if (Number(item.assigned_staff_user_id) === Number(staff.user.id) && item.assigned_staff_user_id != null) return true;
+  if (item.assigned_staff_email && String(item.assigned_staff_email).toLowerCase() === String(staff.email || "").toLowerCase()) return true;
+  if (!["manager", "mid-level manager"].includes(role)) return false;
+  const row = await env.DB.prepare(`
+    SELECT 1 AS ok FROM staff_teams t
+    JOIN staff_team_members tm ON tm.team_id=t.id AND tm.active=1
+    WHERE t.manager_staff_user_id=? AND t.active=1
+      AND (tm.staff_user_id=? OR EXISTS (
+        SELECT 1 FROM staff_users su WHERE su.id=tm.staff_user_id
+        AND lower(su.email)=lower(?)
+      )) LIMIT 1
+  `).bind(staff.user.id, item.assigned_staff_user_id ?? -1, item.assigned_staff_email || "").first();
+  return Boolean(row);
+}
+
 function canActOnWork(staff, item) {
-  if(!staff?.authenticated || !staff?.user?.active) return false;
-  if(trainingManagerAuthorized(staff)) return true;
+  if (!staff?.authenticated || !staff?.user?.active || !item) return false;
+  const role=String(staff.user.role||"").toLowerCase();
+  if (["administrator","admin","developer","ceo"].includes(role)) return true;
   return item.assigned_staff_user_id != null
     ? Number(item.assigned_staff_user_id) === Number(staff.user.id)
     : !!item.assigned_staff_email && String(item.assigned_staff_email).toLowerCase() === String(staff.email||"").toLowerCase();
@@ -2484,8 +2544,20 @@ async function workRoutingPage(env, staff, notice="", params=new URLSearchParams
   const filters=[...statuses,...Object.keys(groups)];
   const selected=filters.includes(params.get("status"))?params.get("status"):"";
   const args=groups[selected]|| (selected?[selected]:[]);
-  const where=args.length?`WHERE w.status IN (${args.map(()=>"?").join(",")})`:"";
-  const matched=await env.DB.prepare(`SELECT COUNT(*) total FROM flt_work_items w ${where}`).bind(...args).first();
+  const executive=["Administrator","CEO"].includes(staff.user.role);
+  const scope=executive ? "1=1" : `(
+    w.assigned_staff_user_id=? OR lower(w.assigned_staff_email)=lower(?)
+    ${["Manager","Mid-level Manager"].includes(staff.user.role) ? `OR EXISTS (
+      SELECT 1 FROM staff_teams t JOIN staff_team_members tm
+      ON tm.team_id=t.id AND tm.active=1
+      LEFT JOIN staff_users su ON su.id=tm.staff_user_id
+      WHERE t.manager_staff_user_id=? AND t.active=1
+      AND (tm.staff_user_id=w.assigned_staff_user_id OR lower(su.email)=lower(w.assigned_staff_email))
+    )` : ""}
+  )`;
+  const scopeArgs=executive?[]:["Manager","Mid-level Manager"].includes(staff.user.role)?[staff.user.id,staff.email,staff.user.id]:[staff.user.id,staff.email];
+  const where=`WHERE ${scope}${args.length?` AND w.status IN (${args.map(()=>"?").join(",")})`:""}`;
+  const matched=await env.DB.prepare(`SELECT COUNT(*) total FROM flt_work_items w ${where}`).bind(...scopeArgs,...args).first();
   const total=Number(matched?.total||0), pages=Math.max(1,Math.ceil(total/25));
   const current=Math.max(1,Math.min(pages,Number.parseInt(params.get("page"),10)||1));
   const pageUrl=n=>"/work-routing?"+new URLSearchParams({...(selected?{status:selected}:{}),page:String(n)}).toString();
@@ -2493,7 +2565,7 @@ async function workRoutingPage(env, staff, notice="", params=new URLSearchParams
     SELECT w.* FROM flt_work_items w ${where}
     ORDER BY CASE w.status WHEN 'Overdue' THEN 0 WHEN 'Deadline Warning' THEN 1 WHEN 'Queued' THEN 2 WHEN 'Assigned' THEN 3 WHEN 'In Progress' THEN 4 ELSE 5 END,
     w.created_at DESC,w.id DESC LIMIT 25 OFFSET ?
-  `).bind(...args,(current-1)*25).all();
+  `).bind(...scopeArgs,...args,(current-1)*25).all();
   const counts=await env.DB.prepare(`
     SELECT COUNT(*) total,
       SUM(CASE WHEN status='Queued' THEN 1 ELSE 0 END) queued,
@@ -2501,8 +2573,8 @@ async function workRoutingPage(env, staff, notice="", params=new URLSearchParams
       SUM(CASE WHEN status='In Progress' THEN 1 ELSE 0 END) in_progress,
       SUM(CASE WHEN status IN ('Escalated','Escalation Required') THEN 1 ELSE 0 END) escalated,
       SUM(CASE WHEN status IN ('Deadline Warning','Overdue') THEN 1 ELSE 0 END) deadline_risk
-    FROM flt_work_items
-  `).first();
+    FROM flt_work_items w ${where}
+  `).bind(...scopeArgs,...args).first();
   const rows=items.results.length?items.results.map(w=>`<tr class="work-summary">
     <td>#${Number(w.id)}</td>
     <td><strong>${esc(w.title||w.work_type)}</strong><div class="small">${esc(w.module_key)}</div></td>
@@ -3517,6 +3589,13 @@ function setFollowupDate(id, days) {
 
 
 const staff = await staffContext(env, request);
+if (/^\/property\/\d+(?:\/|$)/.test(url.pathname)) {
+  const propertyId=Number(url.pathname.split("/")[2]);
+  if (!(await staffHasPropertyScope(env,staff.user,propertyId))) {
+    return await denyAndAudit(env,staff,request,"Property Access Outside Assignment");
+  }
+}
+
 
 /*
   Assignment scope is being populated and verified before global
@@ -3672,7 +3751,7 @@ if(request.method==="GET" && /^\/work-routing\/\d+\/history$/.test(url.pathname)
   if(!staff?.authenticated || !staff?.user?.active) return await denyAndAudit(env,staff,request,"View Work History");
   const item=await env.DB.prepare("SELECT * FROM flt_work_items WHERE id=?").bind(Number(url.pathname.split("/")[2])).first();
   if(!item) return new Response("Work item not found.",{status:404});
-  if(!canActOnWork(staff,item)) return await denyAndAudit(env,staff,request,"View Work History");
+  if(!(await canAccessWorkRecord(env,staff,item))) return await denyAndAudit(env,staff,request,"View Work History");
   return new Response(await workHistoryPage(env,item),{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"}});
 }
 
@@ -3683,7 +3762,7 @@ if(request.method==="GET" && /^\/work-routing\/\d+$/.test(url.pathname)){
     LEFT JOIN mini_comp_queue q ON w.subject_type='mini_comp_queue' AND w.subject_id=q.id WHERE w.id=?`)
     .bind(Number(url.pathname.split("/")[2])).first();
   if(!item) return new Response("Work item not found.",{status:404});
-  if(!canActOnWork(staff,item)) return await denyAndAudit(env,staff,request,"View Work Task");
+  if(!(await canAccessWorkRecord(env,staff,item))) return await denyAndAudit(env,staff,request,"View Work Task");
   return new Response(await workTaskPage(env,staff,item),{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"}});
 }
 
@@ -3699,7 +3778,7 @@ if(request.method==="POST" && /^\/work-routing\/\d+\/progress$/.test(url.pathnam
   if(!sameOriginPost(request)) return new Response("Invalid request origin.",{status:403});
   const item=await env.DB.prepare("SELECT * FROM flt_work_items WHERE id=?").bind(Number(url.pathname.split("/")[2])).first();
   if(!item) return new Response("Work item not found.",{status:404});
-  if(!canActOnWork(staff,item)) return await denyAndAudit(env,staff,request,"Update Work Progress");
+  if(!(await canAccessWorkRecord(env,staff,item))) return await denyAndAudit(env,staff,request,"Update Work Progress");
   const form=await request.formData();
   const action=String(form.get("action")||"");
   const note=String(form.get("note")||"").trim().slice(0,2000);
@@ -3722,6 +3801,7 @@ if(request.method==="POST" && /^\/work-routing\/\d+\/deadline$/.test(url.pathnam
   if(!trainingManagerAuthorized(staff)) return await denyAndAudit(env,staff,request,"Set Work Deadline");
   const item=await env.DB.prepare("SELECT * FROM flt_work_items WHERE id=?").bind(Number(url.pathname.split("/")[2])).first();
   if(!item) return new Response("Work item not found.",{status:404});
+  if(!(await canAccessWorkRecord(env,staff,item))) return await denyAndAudit(env,staff,request,"Set Other Team Deadline");
   if(["Completed","Closed","Cancelled"].includes(item.status)) return new Response("Completed or closed work cannot receive a deadline.",{status:409});
   const form=await request.formData();
   const reason=String(form.get("reason")||"").trim().slice(0,500);
@@ -3746,7 +3826,7 @@ if(request.method==="POST" && /^\/work-routing\/\d+\/deadline$/.test(url.pathnam
 
 if(request.method==="POST" && url.pathname==="/work-routing/check-deadlines"){
   if(!sameOriginPost(request)) return new Response("Invalid request origin.",{status:403});
-  if(!trainingManagerAuthorized(staff)) return await denyAndAudit(env,staff,request,"Check Work Deadlines");
+  if(!staff?.authenticated || !staff?.user?.active || !["Administrator","CEO"].includes(staff.user.role)) return await denyAndAudit(env,staff,request,"Check Work Deadlines - Executive Only");
   const result=await checkWorkDeadlines(env,staff.email||"Authorized Manager");
   return redirect(`/work-routing?completed=deadlines&checked=${result.checked}&warned=${result.warned}&overdue=${result.overdue}&escalated=${result.escalated}`);
 }
@@ -3759,13 +3839,19 @@ if(request.method==="POST" && /^\/work-routing\/\d+\/redirect$/.test(url.pathnam
   const targetStaffId=Number(form.get("target_staff_id"));
   const reason=String(form.get("reason")||"");
   if(!targetStaffId || !reason.trim()) return new Response("Target employee and redirect reason are required.",{status:400});
+  const sourceItem=await env.DB.prepare("SELECT * FROM flt_work_items WHERE id=?").bind(workItemId).first();
+  if(!(await canAccessWorkRecord(env,staff,sourceItem))) return await denyAndAudit(env,staff,request,"Redirect Other Team Work");
+  if(!["Administrator","CEO"].includes(staff.user.role)) {
+    const target=await env.DB.prepare(`SELECT 1 AS ok FROM staff_teams t JOIN staff_team_members tm ON tm.team_id=t.id AND tm.active=1 WHERE t.manager_staff_user_id=? AND t.active=1 AND tm.staff_user_id=? LIMIT 1`).bind(staff.user.id,targetStaffId).first();
+    if(!target) return await denyAndAudit(env,staff,request,"Redirect Outside Team");
+  }
   await managerRedirectWork(env,workItemId,targetStaffId,reason,staff);
   return redirect("/work-routing");
 }
 
 if(request.method==="POST" && url.pathname==="/work-routing/run"){
   if(!sameOriginPost(request)) return new Response("Invalid request origin.",{status:403});
-  if(!trainingManagerAuthorized(staff)) return await denyAndAudit(env,staff,request,"Run Work Routing");
+  if(!staff?.authenticated || !staff?.user?.active || !["Administrator","CEO"].includes(staff.user.role)) return await denyAndAudit(env,staff,request,"Run Work Routing - Executive Only");
   const result=await routeQueuedWork(env,staff.email||"Authorized Manager");
   return redirect(`/work-routing?completed=routing&assigned=${result.assigned}&held=${result.held}`);
 }
@@ -3886,7 +3972,7 @@ if (
 request.method === "GET" &&
 url.pathname === "/export.csv"
 ) {
-if(!integrityAuthorized(staff)) return await denyAndAudit(env,staff,request,"Export Inquiry Data");
+if(!staff?.authenticated || !staff?.user?.active || !staffCan(staff.user,"export_data") || !["Administrator","CEO"].includes(staff.user.role)) return await denyAndAudit(env,staff,request,"Export Inquiry Data - Executive Only");
 
 const { results } =
 await env.DB.prepare(`
@@ -5726,7 +5812,7 @@ request.method === "POST" &&
 /^\/client\/\d+\/assign$/.test(url.pathname)
 ) {
   if (!sameOriginPost(request)) return new Response("Invalid request origin.", {status:403});
-  if (!staff.authenticated || !staffCan(staff.user, "manage_assignments")) {
+  if (!staff.authenticated || !staffCan(staff.user, "manage_assignments") || !["Administrator","CEO"].includes(staff.user.role)) {
     await logStaffAccess(env, staff, request, "Client Assignment", "Denied");
     return new Response("You do not have permission to assign client records.", {status:403});
   }
@@ -5776,7 +5862,7 @@ request.method === "POST" &&
 /^\/client\/\d+\/assignment\/\d+\/end$/.test(url.pathname)
 ) {
   if (!sameOriginPost(request)) return new Response("Invalid request origin.", {status:403});
-  if (!staff.authenticated || !staffCan(staff.user, "manage_assignments")) {
+  if (!staff.authenticated || !staffCan(staff.user, "manage_assignments") || !["Administrator","CEO"].includes(staff.user.role)) {
     return new Response("You do not have permission to change client assignments.", {status:403});
   }
 
@@ -5816,7 +5902,7 @@ request.method === "POST" &&
 /^\/property\/\d+\/assign$/.test(url.pathname)
 ) {
   if (!sameOriginPost(request)) return new Response("Invalid request origin.", {status:403});
-  if (!staff.authenticated || !staffCan(staff.user, "manage_assignments")) {
+  if (!staff.authenticated || !staffCan(staff.user, "manage_assignments") || !["Administrator","CEO"].includes(staff.user.role)) {
     await logStaffAccess(env, staff, request, "Property Assignment", "Denied");
     return new Response("You do not have permission to assign property records.", {status:403});
   }
@@ -5866,7 +5952,7 @@ request.method === "POST" &&
 /^\/property\/\d+\/assignment\/\d+\/end$/.test(url.pathname)
 ) {
   if (!sameOriginPost(request)) return new Response("Invalid request origin.", {status:403});
-  if (!staff.authenticated || !staffCan(staff.user, "manage_assignments")) {
+  if (!staff.authenticated || !staffCan(staff.user, "manage_assignments") || !["Administrator","CEO"].includes(staff.user.role)) {
     return new Response("You do not have permission to change property assignments.", {status:403});
   }
 
@@ -6043,13 +6129,24 @@ request.method === "GET" &&
 url.pathname === "/clients"
 ) {
 
+if (!staff?.authenticated || !staff?.user?.active || !staffCan(staff.user,"view_clients")) return await denyAndAudit(env,staff,request,"Client Directory");
+const executiveClientAccess=["Administrator","CEO"].includes(staff.user.role);
+const clientScopeSQL=executiveClientAccess?"1=1":`(
+  EXISTS (SELECT 1 FROM client_assignments ca WHERE ca.client_id=c.id AND ca.active=1 AND ca.staff_user_id=?)
+  OR EXISTS (SELECT 1 FROM property_assignments pa JOIN properties p ON p.id=pa.property_id WHERE p.client_id=c.id AND pa.active=1 AND pa.staff_user_id=?)
+  ${staff.user.role==="Manager" ? `OR EXISTS (
+    SELECT 1 FROM staff_teams t JOIN staff_team_members tm ON tm.team_id=t.id AND tm.active=1
+    JOIN client_assignments ca ON ca.staff_user_id=tm.staff_user_id AND ca.active=1
+    WHERE t.manager_staff_user_id=? AND t.active=1 AND ca.client_id=c.id
+  )` : ""}
+)`;
+const clientScopeArgs=executiveClientAccess?[]:staff.user.role==="Manager"?[staff.user.id,staff.user.id,staff.user.id]:[staff.user.id,staff.user.id];
 /*
   Backfill legacy inquiries in small batches.
   This lets the new Client Account system adopt existing records
   without a destructive migration or a long blocking database job.
 */
-const unlinked =
-await env.DB.prepare(`
+const unlinked = executiveClientAccess ? await env.DB.prepare(`
 SELECT i.*
 FROM inquiries i
 LEFT JOIN client_inquiries ci
@@ -6059,7 +6156,7 @@ WHERE
   AND TRIM(COALESCE(i.email,'')) <> ''
 ORDER BY i.created_at DESC, i.id DESC
 LIMIT 100
-`).all();
+`).all() : {results:[]};
 
 for (const inquiry of unlinked.results) {
   try {
@@ -6091,9 +6188,10 @@ LEFT JOIN client_inquiries ci
   ON ci.client_id = c.id
 LEFT JOIN inquiries i
   ON i.id = ci.inquiry_id
+WHERE ${clientScopeSQL}
 GROUP BY c.id
 ORDER BY c.updated_at DESC, c.id DESC
-`).all();
+`).bind(...clientScopeArgs).all();
 
 const rows =
 results.length
@@ -6193,6 +6291,8 @@ request.method === "GET" &&
 
 const clientId =
 Number(url.pathname.split("/").filter(Boolean)[1]);
+if (!staff?.authenticated || !staff?.user?.active || !staffCan(staff.user,"view_clients") || !(await staffHasClientScope(env,staff.user,clientId))) return await denyAndAudit(env,staff,request,"View Client Detail");
+
 
 const client =
 await env.DB.prepare(`
