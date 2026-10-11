@@ -3548,6 +3548,13 @@ function setFollowupDate(id, days) {
 
 
 const staff = await staffContext(env, request);
+if (/^\/property\/\d+(?:\/|$)/.test(url.pathname)) {
+  const propertyId=Number(url.pathname.split("/")[2]);
+  if (!(await staffHasPropertyScope(env,staff.user,propertyId))) {
+    return await denyAndAudit(env,staff,request,"Property Access Outside Assignment");
+  }
+}
+
 
 /*
   Assignment scope is being populated and verified before global
