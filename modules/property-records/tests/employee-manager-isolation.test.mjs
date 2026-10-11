@@ -51,3 +51,16 @@ test("employees and CFO cannot view other assigned work", async () => {
 test("managers do not inherit global work access by title", () => {
   assert.equal(canActOnWork(manager(201), task(101)), false);
 });
+
+test("Access identity cannot be spoofed using an email header alone", async () => {
+  const accessIdentity = loadFunction("const ACCESS_ISSUER =", "async function staffContext(", "accessIdentity", {
+    Date, JSON, TextDecoder, TextEncoder, Uint8Array, atob, crypto: globalThis.crypto,
+    AbortSignal, fetch: async () => { throw new Error("No external fetch expected"); }
+  });
+  const forged = { headers: { get(name) {
+    return name === "Cf-Access-Authenticated-User-Email" ? "admin@example.invalid" : null;
+  } } };
+  assert.equal(await accessIdentity(forged), "");
+  assert.equal(await accessIdentity({headers:{get:()=>null}}), "");
+  assert.equal(await accessIdentity({headers:{get:name=>name==="Cf-Access-Jwt-Assertion"?"invalid.token.value":null}}), "");
+});
