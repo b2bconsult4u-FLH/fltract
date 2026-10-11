@@ -2525,44 +2525,42 @@ export default {
 *       A client-account failure does not discard a saved inquiry.
 *       -------------------------------------------------------- */
 
+    let accountLinkStatus = "complete";
+    let recoveryRecorded = false;
     try {
-
-      const clientId =
-        await linkInquiryToClient(
-          env,
-          {
-            inquiryId,
-            firstName,
-            lastName,
-            email,
-            phone
-          }
-        );
-
-      await linkInquiryToProperty(
-        env,
-        {
-          clientId,
-          inquiryId,
-          propertyLocation,
-          county,
-          propertyType,
-          acreage,
-          improvements
-        }
-      );
-
+      const clientId = await linkInquiryToClient(env, {
+        inquiryId, firstName, lastName, email, phone
+      });
+      await linkInquiryToProperty(env, {
+        clientId, inquiryId, propertyLocation, county, propertyType, acreage, improvements
+      });
+    } catch (error) {
+      accountLinkStatus = "pending_recovery";
+      console.error("Client/property account link failed; saved inquiry requires recovery:", error);
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS intake_recovery_queue (
+          inquiry_id INTEGER PRIMARY KEY,
+          status TEXT NOT NULL DEFAULT 'Needs Manager Review',
+          failure_stage TEXT NOT NULL DEFAULT 'Client/Property Link',
+          attempts INTEGER NOT NULL DEFAULT 0,
+          last_error TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`).run();
+        await env.DB.prepare(`INSERT INTO intake_recovery_queue
+          (inquiry_id, status, last_error)
+          VALUES (?, 'Needs Manager Review', ?)
+          ON CONFLICT(inquiry_id) DO UPDATE SET
+            status = 'Needs Manager Review',
+            last_error = excluded.last_error,
+            updated_at = CURRENT_TIMESTAMP`)
+          .bind(inquiryId, String(error?.message || error).slice(0, 500)).run();
+        recoveryRecorded = true;
+      } catch (recoveryError) {
+        console.error("CRITICAL: intake recovery queue write failed for saved inquiry:", inquiryId, recoveryError);
+        accountLinkStatus = "requires_manual_reconciliation";
+      }
     }
-    catch (error) {
-
-      console.error(
-        "Client/property account link failed:",
-        error
-      );
-
-    }
-
-
 
 
 
@@ -3479,9 +3477,12 @@ This is an internal operational notification. Do not reply to this message.`;
 
         message:
 
-          "Your FLTract property inquiry has been received.",
+          accountLinkStatus === "complete" ? "Your FLTract property inquiry has been received." : "Your inquiry was saved, but property processing is pending review.",
 
 
+
+        account_processing_status: accountLinkStatus,
+        recovery_recorded: recoveryRecorded,
 
         acknowledgment_email:
 
@@ -3501,7 +3502,7 @@ This is an internal operational notification. Do not reply to this message.`;
 
       },
 
-      201
+      accountLinkStatus === "complete" ? 201 : 202
 
     );
 

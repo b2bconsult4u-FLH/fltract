@@ -198,7 +198,9 @@ test('replacement intake succeeds when optional module is absent or unavailable,
     const db = coreDb(); let attemptedReceipts = 0;
     const response = await intake.fetch(submission(), { DB: db, PROPERTY_RECORDS_ENABLED: enabled, SEND_EMAIL: { async send() { attemptedReceipts++; return {}; } } });
     const result = await response.json();
-    assert.equal(response.status, 201);
+    assert.equal(response.status, 202); // Stub cannot link client/property; inquiry is safely retained.
+    assert.equal(result.account_processing_status, 'requires_manual_reconciliation');
+    assert.equal(result.recovery_recorded, false); // Core DB stub has no recovery-queue support.
     assert.equal(result.ok, true);
     assert.equal(result.inquiry_id, 1); // Optional research is fail-open and not part of the public response.
     assert.equal(attemptedReceipts, 2); // Customer receipt and internal notification; stub only, no mail leaves this test.
@@ -211,6 +213,45 @@ test('removing the module hook/import leaves a working core Worker', async () =>
     .replace(/    \/\/ Optional, fail-open county research;[\s\S]*?    \/\* --------------------------------------------------------\*\n\*       LINK CLIENT ACCOUNT/, '    /* --------------------------------------------------------*\\n*       LINK CLIENT ACCOUNT');
   const stripped = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
   const response = await stripped.default.fetch(submission(), { DB: coreDb(), SEND_EMAIL: { async send() { return {}; } } });
-  assert.equal(response.status, 201);
-  assert.equal((await response.json()).property_research, undefined);
+  assert.equal(response.status, 202);
+  const body = await response.json();
+  assert.equal(body.account_processing_status, 'requires_manual_reconciliation');
+  assert.equal(body.recovery_recorded, false);
+  assert.equal(body.property_research, undefined);
+});
+
+test('fail-safe persists a recoverable inquiry in real SQLite when client linking fails', async () => {
+  const sqlite = new DatabaseSync(':memory:');
+  const base = coreDb();
+  const db = {
+    statements: base.statements,
+    prepare(sql) {
+      if (/intake_recovery_queue/.test(sql)) {
+        const stmt = sqlite.prepare(sql);
+        return { bind(...args) { return { async run() {
+          const result = stmt.run(...args);
+          return { meta: { last_row_id: Number(result.lastInsertRowid) } };
+        } }; }, async run() { stmt.run(); return { success: true }; } };
+      }
+      return base.prepare(sql);
+    },
+    async batch() { throw new Error('SIMULATED_CLIENT_LINK_OUTAGE'); }
+  };
+  const response = await intake.fetch(submission(), {
+    DB: db,
+    SEND_EMAIL: { async send() { return { messageId: 'test-only' }; } }
+  });
+  const body = await response.json();
+  assert.equal(response.status, 202);
+  assert.equal(body.ok, true);
+  assert.equal(body.inquiry_id, 1);
+  assert.equal(body.account_processing_status, 'pending_recovery');
+  assert.equal(body.recovery_recorded, true);
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM intake_recovery_queue').get().n, 1);
+  const saved = sqlite.prepare('SELECT inquiry_id, status, last_error FROM intake_recovery_queue').get();
+  assert.equal(saved.inquiry_id, 1);
+  assert.equal(saved.status, 'Needs Manager Review');
+  assert.match(saved.last_error, /SIMULATED_CLIENT_LINK_OUTAGE/);
+  assert.equal(db.statements.filter(sql => sql.includes('INSERT INTO inquiries')).length, 1);
+  sqlite.close();
 });
