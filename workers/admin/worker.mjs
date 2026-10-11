@@ -1325,14 +1325,54 @@ const STAFF_ROLES = [
   "Employee"
 ];
 
-function accessIdentity(request) {
-  return String(
-    request.headers.get("Cf-Access-Authenticated-User-Email") || ""
-  ).trim().toLowerCase();
+// Verify Cloudflare Access JWT cryptographically. The email header alone is
+// user-controllable when a Worker is reachable outside Access and is NEVER proof
+// of authentication.
+const ACCESS_ISSUER = "https://b2bconsult4u.cloudflareaccess.com";
+const ACCESS_AUDIENCE = "4312260f76753fb5e3464d1696f75069a27536a21048ae819ac63e79b46f198b";
+let accessKeysCache = { expires: 0, keys: [] };
+function accessBase64Url(value) {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const bytes = atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "="));
+  return Uint8Array.from(bytes, c => c.charCodeAt(0));
+}
+async function accessIdentity(request) {
+  try {
+    const token = request.headers.get("Cf-Access-Jwt-Assertion");
+    if (!token || token.length > 12000) return "";
+    const parts = token.split(".");
+    if (parts.length !== 3) return "";
+    const header = JSON.parse(new TextDecoder().decode(accessBase64Url(parts[0])));
+    const payload = JSON.parse(new TextDecoder().decode(accessBase64Url(parts[1])));
+    const now = Math.floor(Date.now() / 1000);
+    if (header.alg !== "RS256" || !header.kid || payload.iss !== ACCESS_ISSUER ||
+        !Array.isArray(payload.aud) || !payload.aud.includes(ACCESS_AUDIENCE) ||
+        !Number.isFinite(payload.exp) || payload.exp <= now ||
+        !Number.isFinite(payload.iat) || payload.iat > now + 60 ||
+        (payload.nbf !== undefined && payload.nbf > now + 60)) return "";
+    if (Date.now() > accessKeysCache.expires) {
+      const response = await fetch(ACCESS_ISSUER + "/cdn-cgi/access/certs", {
+        signal: AbortSignal.timeout(4000)
+      });
+      if (!response.ok) return "";
+      const certs = await response.json();
+      accessKeysCache = { expires: Date.now() + 300000, keys: certs.keys || [] };
+    }
+    const jwk = accessKeysCache.keys.find(key => key.kid === header.kid);
+    if (!jwk) return "";
+    const key = await crypto.subtle.importKey("jwk", jwk, {
+      name: "RSASSA-PKCS1-v1_5", hash: "SHA-256"
+    }, false, ["verify"]);
+    const signed = new TextEncoder().encode(parts[0] + "." + parts[1]);
+    const valid = await crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, accessBase64Url(parts[2]), signed);
+    return valid && typeof payload.email === "string" ? payload.email.trim().toLowerCase() : "";
+  } catch {
+    return "";
+  }
 }
 
 async function staffContext(env, request) {
-  const email = accessIdentity(request);
+  const email = await accessIdentity(request);
   if (!email) {
     return {authenticated:false, email:"", user:null};
   }
