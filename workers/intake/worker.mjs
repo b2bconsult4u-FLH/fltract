@@ -366,12 +366,12 @@ async function linkInquiryToProperty(
     await env.DB.prepare(`
       SELECT p.id
       FROM properties p
-      JOIN property_inquiries pi
+      LEFT JOIN property_inquiries pi
         ON pi.property_id = p.id
-      WHERE pi.inquiry_id = ?
+      WHERE (pi.inquiry_id = ? OR p.primary_inquiry_id = ?)
       LIMIT 1
     `)
-    .bind(inquiryId)
+    .bind(inquiryId, inquiryId)
     .first();
 
   // A retry must repair downstream artifacts even when the property already exists.
