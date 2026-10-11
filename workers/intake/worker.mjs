@@ -2560,6 +2560,28 @@ export default {
             last_error = excluded.last_error,
             updated_at = CURRENT_TIMESTAMP`)
           .bind(inquiryId, String(error?.message || error).slice(0, 500)).run();
+        // Route recoverable intake failures to the existing manager work queue.
+        // A duplicate retry must not create duplicate open assignments.
+        const existingManagerTask = await env.DB.prepare(`
+          SELECT id FROM flt_work_items
+          WHERE work_type = 'Intake Recovery'
+            AND subject_type = 'inquiry'
+            AND subject_id = ?
+            AND status NOT IN ('Completed', 'Cancelled')
+          LIMIT 1
+        `).bind(inquiryId).first();
+        if (!existingManagerTask?.id) {
+          await env.DB.prepare(`
+            INSERT INTO flt_work_items
+              (work_type, module_key, subject_type, subject_id, title,
+               priority, status, required_role, routing_reason, created_by,
+               due_at, warning_at, sla_minutes)
+            VALUES ('Intake Recovery', 'intake', 'inquiry', ?, ?,
+                    'Critical', 'Needs Manager Review', 'Manager',
+                    'Account/property linking failed; inquiry saved', 'FLTract',
+                    datetime('now', '+1 hour'), datetime('now'), 60)
+          `).bind(inquiryId, `Recover intake inquiry #${inquiryId}`).run();
+        }
         recoveryRecorded = true;
       } catch (recoveryError) {
         console.error("CRITICAL: intake recovery queue write failed for saved inquiry:", inquiryId, recoveryError);
