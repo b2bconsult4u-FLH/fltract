@@ -374,10 +374,9 @@ async function linkInquiryToProperty(
     .bind(inquiryId)
     .first();
 
-  if (existing?.id) {
-    return Number(existing.id);
-  }
-
+  // A retry must repair downstream artifacts even when the property already exists.
+  let propertyId = existing?.id ? Number(existing.id) : 0;
+  if (!propertyId) {
   const insert =
     await env.DB.prepare(`
       INSERT INTO properties (
@@ -403,10 +402,12 @@ async function linkInquiryToProperty(
     )
     .run();
 
-  const propertyId = Number(insert?.meta?.last_row_id) || 0;
+  propertyId = Number(insert?.meta?.last_row_id) || 0;
 
   if (!propertyId) {
     throw new Error("PROPERTY_LINK_FAILED");
+  }
+
   }
 
   await env.DB.prepare(`
@@ -438,6 +439,10 @@ async function linkInquiryToProperty(
   `)
   .bind(propertyId)
   .first();
+
+  if (!report?.id) {
+    throw new Error('MINI_COMP_REPORT_LINK_FAILED');
+  }
 
   if (report?.id) {
     await env.DB.prepare(`
