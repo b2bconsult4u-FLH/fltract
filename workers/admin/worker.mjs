@@ -2394,8 +2394,9 @@ async function canAccessWorkRecord(env, staff, item) {
 }
 
 function canActOnWork(staff, item) {
-  if(!staff?.authenticated || !staff?.user?.active) return false;
-  if(trainingManagerAuthorized(staff)) return true;
+  if (!staff?.authenticated || !staff?.user?.active || !item) return false;
+  const role=String(staff.user.role||"").toLowerCase();
+  if (["administrator","admin","developer","ceo"].includes(role)) return true;
   return item.assigned_staff_user_id != null
     ? Number(item.assigned_staff_user_id) === Number(staff.user.id)
     : !!item.assigned_staff_email && String(item.assigned_staff_email).toLowerCase() === String(staff.email||"").toLowerCase();
