@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
+import { generateKeyPairSync, sign, webcrypto } from "node:crypto";
 
 const source = readFileSync(new URL("../../../workers/admin/worker.mjs", import.meta.url), "utf8");
 function loadFunction(start, end, name, dependencies = {}) {
@@ -63,4 +64,28 @@ test("Access identity cannot be spoofed using an email header alone", async () =
   assert.equal(await accessIdentity(forged), "");
   assert.equal(await accessIdentity({headers:{get:()=>null}}), "");
   assert.equal(await accessIdentity({headers:{get:name=>name==="Cf-Access-Jwt-Assertion"?"invalid.token.value":null}}), "");
+});
+
+test("a valid signed Cloudflare Access JWT authenticates and a tampered one fails", async () => {
+  const {publicKey,privateKey} = generateKeyPairSync("rsa",{modulusLength:2048});
+  const jwk = publicKey.export({format:"jwk"});
+  jwk.kid="acceptance-key";
+  const b64 = value => Buffer.from(JSON.stringify(value)).toString("base64url");
+  const now = Math.floor(Date.now()/1000);
+  const header = b64({alg:"RS256",kid:"acceptance-key",typ:"JWT"});
+  const payload = b64({iss:"https://b2bconsult4u.cloudflareaccess.com",
+    aud:["4312260f76753fb5e3464d1696f75069a27536a21048ae819ac63e79b46f198b"],
+    email:"Admin@Example.Invalid",iat:now-30,exp:now+300});
+  const body = header+"."+payload;
+  const signature = sign("RSA-SHA256",Buffer.from(body),privateKey).toString("base64url");
+  const token=body+"."+signature;
+  let certRequests=0;
+  const accessIdentity = loadFunction("const ACCESS_ISSUER =", "async function staffContext(", "accessIdentity", {
+    Date,JSON,TextDecoder,TextEncoder,Uint8Array,atob,crypto:webcrypto,AbortSignal,
+    fetch:async () => {certRequests++;return {ok:true,json:async()=>({keys:[jwk]})};}
+  });
+  const request = jwt => ({headers:{get:name=>name==="Cf-Access-Jwt-Assertion"?jwt:null}});
+  assert.equal(await accessIdentity(request(token)),"admin@example.invalid");
+  assert.equal(await accessIdentity(request(body+"."+signature.slice(0,-2)+"ab")),"");
+  assert.equal(certRequests,1);
 });
