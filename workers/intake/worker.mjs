@@ -964,7 +964,60 @@ const CONTACT_METHODS = [
 
 
 
+
+async function retryPendingIntakes(env) {
+  const rows = await env.DB.prepare(`
+    SELECT q.inquiry_id, q.attempts, i.first_name, i.last_name, i.email,
+           i.phone, i.property_location, i.county, i.property_type,
+           i.acreage, i.improvements
+    FROM intake_recovery_queue q
+    JOIN inquiries i ON i.id = q.inquiry_id
+    WHERE q.status IN ('Needs Manager Review', 'Retry Pending')
+      AND q.attempts < 5
+      AND (q.updated_at <= datetime('now', '-15 minutes') OR q.attempts = 0)
+    ORDER BY q.updated_at ASC LIMIT 10
+  `).all();
+  for (const row of rows.results || []) {
+    try {
+      const clientId = await linkInquiryToClient(env, {
+        inquiryId: row.inquiry_id, firstName: row.first_name,
+        lastName: row.last_name, email: row.email, phone: row.phone
+      });
+      await linkInquiryToProperty(env, {
+        clientId, inquiryId: row.inquiry_id,
+        propertyLocation: row.property_location, county: row.county,
+        propertyType: row.property_type, acreage: row.acreage,
+        improvements: row.improvements
+      });
+      await env.DB.prepare(`
+        UPDATE intake_recovery_queue SET status = 'Resolved',
+          attempts = attempts + 1, last_error = '',
+          updated_at = CURRENT_TIMESTAMP WHERE inquiry_id = ?
+      `).bind(row.inquiry_id).run();
+      await env.DB.prepare(`
+        UPDATE flt_work_items SET status = 'Completed',
+          completed_at = CURRENT_TIMESTAMP
+        WHERE work_type = 'Intake Recovery' AND subject_type = 'inquiry'
+          AND subject_id = ? AND status NOT IN ('Completed', 'Cancelled')
+      `).bind(row.inquiry_id).run();
+    } catch (error) {
+      await env.DB.prepare(`
+        UPDATE intake_recovery_queue SET
+          attempts = attempts + 1,
+          status = CASE WHEN attempts + 1 >= 5 THEN 'Needs Manager Review'
+                        ELSE 'Retry Pending' END,
+          last_error = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE inquiry_id = ?
+      `).bind(String(error?.message || error).slice(0, 500), row.inquiry_id).run();
+      console.error('Intake recovery retry failed', row.inquiry_id, error);
+    }
+  }
+}
+
 export default {
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(retryPendingIntakes(env));
+  },
 
 
 
