@@ -15,16 +15,16 @@ function isolatedDb() {
   const db = {
     sqlite,
     prepare(sql) {
-      const stmt = sqlite.prepare(sql);
+      const statement = () => sqlite.prepare(sql);
       return {
         bind(...values) {
           return {
-            async run() { const result = stmt.run(...values); return { meta: { last_row_id: Number(result.lastInsertRowid) } }; },
-            async first() { return stmt.get(...values) || null; }
+            async run() { const result = statement().run(...values); return { meta: { last_row_id: Number(result.lastInsertRowid) } }; },
+            async first() { return statement().get(...values) || null; }
           };
         },
-        async run() { const result = stmt.run(); return { meta: { last_row_id: Number(result.lastInsertRowid) } }; },
-        async first() { return stmt.get() || null; }
+        async run() { const result = statement().run(); return { meta: { last_row_id: Number(result.lastInsertRowid) } }; },
+        async first() { return statement().get() || null; }
       };
     },
     async batch(statements) { return Promise.all(statements.map(s => s.run())); }
