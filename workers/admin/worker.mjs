@@ -6080,13 +6080,24 @@ request.method === "GET" &&
 url.pathname === "/clients"
 ) {
 
+if (!staff?.authenticated || !staff?.user?.active || !staffCan(staff.user,"view_clients")) return await denyAndAudit(env,staff,request,"Client Directory");
+const executiveClientAccess=["Administrator","CEO"].includes(staff.user.role);
+const clientScopeSQL=executiveClientAccess?"1=1":`(
+  EXISTS (SELECT 1 FROM client_assignments ca WHERE ca.client_id=c.id AND ca.active=1 AND ca.staff_user_id=?)
+  OR EXISTS (SELECT 1 FROM property_assignments pa JOIN properties p ON p.id=pa.property_id WHERE p.client_id=c.id AND pa.active=1 AND pa.staff_user_id=?)
+  ${staff.user.role==="Manager" ? `OR EXISTS (
+    SELECT 1 FROM staff_teams t JOIN staff_team_members tm ON tm.team_id=t.id AND tm.active=1
+    JOIN client_assignments ca ON ca.staff_user_id=tm.staff_user_id AND ca.active=1
+    WHERE t.manager_staff_user_id=? AND t.active=1 AND ca.client_id=c.id
+  )` : ""}
+)`;
+const clientScopeArgs=executiveClientAccess?[]:staff.user.role==="Manager"?[staff.user.id,staff.user.id,staff.user.id]:[staff.user.id,staff.user.id];
 /*
   Backfill legacy inquiries in small batches.
   This lets the new Client Account system adopt existing records
   without a destructive migration or a long blocking database job.
 */
-const unlinked =
-await env.DB.prepare(`
+const unlinked = executiveClientAccess ? await env.DB.prepare(`
 SELECT i.*
 FROM inquiries i
 LEFT JOIN client_inquiries ci
@@ -6096,7 +6107,7 @@ WHERE
   AND TRIM(COALESCE(i.email,'')) <> ''
 ORDER BY i.created_at DESC, i.id DESC
 LIMIT 100
-`).all();
+`).all() : {results:[]};
 
 for (const inquiry of unlinked.results) {
   try {
@@ -6128,9 +6139,10 @@ LEFT JOIN client_inquiries ci
   ON ci.client_id = c.id
 LEFT JOIN inquiries i
   ON i.id = ci.inquiry_id
+WHERE ${clientScopeSQL}
 GROUP BY c.id
 ORDER BY c.updated_at DESC, c.id DESC
-`).all();
+`).bind(...clientScopeArgs).all();
 
 const rows =
 results.length
@@ -6230,6 +6242,8 @@ request.method === "GET" &&
 
 const clientId =
 Number(url.pathname.split("/").filter(Boolean)[1]);
+if (!staff?.authenticated || !staff?.user?.active || !staffCan(staff.user,"view_clients") || !(await staffHasClientScope(env,staff.user,clientId))) return await denyAndAudit(env,staff,request,"View Client Detail");
+
 
 const client =
 await env.DB.prepare(`
