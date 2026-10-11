@@ -201,7 +201,7 @@ test('replacement intake succeeds when optional module is absent or unavailable,
     assert.equal(response.status, 201);
     assert.equal(result.ok, true);
     assert.equal(result.inquiry_id, 1); // Optional research is fail-open and not part of the public response.
-    assert.equal(attemptedReceipts, 1); // Stub only; no mail leaves this test.
+    assert.equal(attemptedReceipts, 2); // Customer receipt and internal notification; stub only, no mail leaves this test.
     assert.equal(db.statements.filter(sql => sql.includes('INSERT INTO inquiries')).length, 1);
   }
 });
