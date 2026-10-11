@@ -2503,8 +2503,20 @@ async function workRoutingPage(env, staff, notice="", params=new URLSearchParams
   const filters=[...statuses,...Object.keys(groups)];
   const selected=filters.includes(params.get("status"))?params.get("status"):"";
   const args=groups[selected]|| (selected?[selected]:[]);
-  const where=args.length?`WHERE w.status IN (${args.map(()=>"?").join(",")})`:"";
-  const matched=await env.DB.prepare(`SELECT COUNT(*) total FROM flt_work_items w ${where}`).bind(...args).first();
+  const executive=["Administrator","CEO"].includes(staff.user.role);
+  const scope=executive ? "1=1" : `(
+    w.assigned_staff_user_id=? OR lower(w.assigned_staff_email)=lower(?)
+    ${["Manager","Mid-level Manager"].includes(staff.user.role) ? `OR EXISTS (
+      SELECT 1 FROM staff_teams t JOIN staff_team_members tm
+      ON tm.team_id=t.id AND tm.active=1
+      LEFT JOIN staff_users su ON su.id=tm.staff_user_id
+      WHERE t.manager_staff_user_id=? AND t.active=1
+      AND (tm.staff_user_id=w.assigned_staff_user_id OR lower(su.email)=lower(w.assigned_staff_email))
+    )` : ""}
+  )`;
+  const scopeArgs=executive?[]:["Manager","Mid-level Manager"].includes(staff.user.role)?[staff.user.id,staff.email,staff.user.id]:[staff.user.id,staff.email];
+  const where=`WHERE ${scope}${args.length?` AND w.status IN (${args.map(()=>"?").join(",")})`:""}`;
+  const matched=await env.DB.prepare(`SELECT COUNT(*) total FROM flt_work_items w ${where}`).bind(...scopeArgs,...args).first();
   const total=Number(matched?.total||0), pages=Math.max(1,Math.ceil(total/25));
   const current=Math.max(1,Math.min(pages,Number.parseInt(params.get("page"),10)||1));
   const pageUrl=n=>"/work-routing?"+new URLSearchParams({...(selected?{status:selected}:{}),page:String(n)}).toString();
@@ -2512,7 +2524,7 @@ async function workRoutingPage(env, staff, notice="", params=new URLSearchParams
     SELECT w.* FROM flt_work_items w ${where}
     ORDER BY CASE w.status WHEN 'Overdue' THEN 0 WHEN 'Deadline Warning' THEN 1 WHEN 'Queued' THEN 2 WHEN 'Assigned' THEN 3 WHEN 'In Progress' THEN 4 ELSE 5 END,
     w.created_at DESC,w.id DESC LIMIT 25 OFFSET ?
-  `).bind(...args,(current-1)*25).all();
+  `).bind(...scopeArgs,...args,(current-1)*25).all();
   const counts=await env.DB.prepare(`
     SELECT COUNT(*) total,
       SUM(CASE WHEN status='Queued' THEN 1 ELSE 0 END) queued,
@@ -2520,8 +2532,8 @@ async function workRoutingPage(env, staff, notice="", params=new URLSearchParams
       SUM(CASE WHEN status='In Progress' THEN 1 ELSE 0 END) in_progress,
       SUM(CASE WHEN status IN ('Escalated','Escalation Required') THEN 1 ELSE 0 END) escalated,
       SUM(CASE WHEN status IN ('Deadline Warning','Overdue') THEN 1 ELSE 0 END) deadline_risk
-    FROM flt_work_items
-  `).first();
+    FROM flt_work_items w ${where}
+  `).bind(...scopeArgs,...args).first();
   const rows=items.results.length?items.results.map(w=>`<tr class="work-summary">
     <td>#${Number(w.id)}</td>
     <td><strong>${esc(w.title||w.work_type)}</strong><div class="small">${esc(w.module_key)}</div></td>
