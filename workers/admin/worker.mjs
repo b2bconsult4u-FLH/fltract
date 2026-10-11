@@ -3932,7 +3932,7 @@ if (
 request.method === "GET" &&
 url.pathname === "/export.csv"
 ) {
-if(!integrityAuthorized(staff)) return await denyAndAudit(env,staff,request,"Export Inquiry Data");
+if(!staff?.authenticated || !staff?.user?.active || !staffCan(staff.user,"export_data") || !["Administrator","CEO"].includes(staff.user.role)) return await denyAndAudit(env,staff,request,"Export Inquiry Data - Executive Only");
 
 const { results } =
 await env.DB.prepare(`
