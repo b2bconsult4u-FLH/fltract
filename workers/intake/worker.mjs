@@ -1043,7 +1043,7 @@ export default {
 
         status: "ready",
 
-        public_submissions_enabled: false,
+        public_submissions_enabled: true,
 
         consent_version: CONSENT_VERSION
 
