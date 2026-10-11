@@ -31,3 +31,23 @@ test("manager scope is NOT established merely by role", () => {
   // Follow-on route and SQL tests must prove per-team visibility before release.
   assert.equal(staffCan({ id: 201, role: "Manager", active: 1 }, "manage_assignments"), true);
 });
+
+const canAccessWorkRecord = loadFunction("async function canAccessWorkRecord(", "function canActOnWork(", "canAccessWorkRecord");
+const manager = (id) => ({ authenticated: true, email: "manager"+id+"@example.invalid", user: { id, active: 1, role: "Manager" } });
+const fakeDb = (allowed) => ({ DB: { prepare(sql) {
+  assert.match(sql, /staff_teams/);
+  return { bind(...args) { return { async first() { return allowed ? {ok:1} : null; } }; } };
+} } });
+test("managers cannot view unrelated team tasks", async () => {
+  assert.equal(await canAccessWorkRecord(fakeDb(false), manager(201), task(101)), false);
+  assert.equal(await canAccessWorkRecord(fakeDb(true), manager(201), task(101)), true);
+  assert.equal(await canAccessWorkRecord(fakeDb(false), manager(201), task(201)), true);
+});
+test("employees and CFO cannot view other assigned work", async () => {
+  assert.equal(await canAccessWorkRecord(fakeDb(true), employee(101), task(102)), false);
+  const cfo = {...employee(301),user:{id:301,active:1,role:"CFO"}};
+  assert.equal(await canAccessWorkRecord(fakeDb(true), cfo, task(102)), false);
+});
+test("managers do not inherit global work access by title", () => {
+  assert.equal(canActOnWork(manager(201), task(101)), false);
+});
