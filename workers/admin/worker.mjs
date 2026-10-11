@@ -2374,6 +2374,25 @@ async function routeQueuedWork(env, performedBy="FLTract Router") {
   return {assigned,held};
 }
 
+async function canAccessWorkRecord(env, staff, item) {
+  if (!staff?.authenticated || !staff?.user?.active || !item) return false;
+  const role = String(staff.user.role || "").toLowerCase();
+  if (["administrator", "admin", "developer", "ceo"].includes(role)) return true;
+  if (Number(item.assigned_staff_user_id) === Number(staff.user.id) && item.assigned_staff_user_id != null) return true;
+  if (item.assigned_staff_email && String(item.assigned_staff_email).toLowerCase() === String(staff.email || "").toLowerCase()) return true;
+  if (!["manager", "mid-level manager"].includes(role)) return false;
+  const row = await env.DB.prepare(`
+    SELECT 1 AS ok FROM staff_teams t
+    JOIN staff_team_members tm ON tm.team_id=t.id AND tm.active=1
+    WHERE t.manager_staff_user_id=? AND t.active=1
+      AND (tm.staff_user_id=? OR EXISTS (
+        SELECT 1 FROM staff_users su WHERE su.id=tm.staff_user_id
+        AND lower(su.email)=lower(?)
+      )) LIMIT 1
+  `).bind(staff.user.id, item.assigned_staff_user_id ?? -1, item.assigned_staff_email || "").first();
+  return Boolean(row);
+}
+
 function canActOnWork(staff, item) {
   if(!staff?.authenticated || !staff?.user?.active) return false;
   if(trainingManagerAuthorized(staff)) return true;
@@ -3672,7 +3691,7 @@ if(request.method==="GET" && /^\/work-routing\/\d+\/history$/.test(url.pathname)
   if(!staff?.authenticated || !staff?.user?.active) return await denyAndAudit(env,staff,request,"View Work History");
   const item=await env.DB.prepare("SELECT * FROM flt_work_items WHERE id=?").bind(Number(url.pathname.split("/")[2])).first();
   if(!item) return new Response("Work item not found.",{status:404});
-  if(!canActOnWork(staff,item)) return await denyAndAudit(env,staff,request,"View Work History");
+  if(!(await canAccessWorkRecord(env,staff,item))) return await denyAndAudit(env,staff,request,"View Work History");
   return new Response(await workHistoryPage(env,item),{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"}});
 }
 
@@ -3683,7 +3702,7 @@ if(request.method==="GET" && /^\/work-routing\/\d+$/.test(url.pathname)){
     LEFT JOIN mini_comp_queue q ON w.subject_type='mini_comp_queue' AND w.subject_id=q.id WHERE w.id=?`)
     .bind(Number(url.pathname.split("/")[2])).first();
   if(!item) return new Response("Work item not found.",{status:404});
-  if(!canActOnWork(staff,item)) return await denyAndAudit(env,staff,request,"View Work Task");
+  if(!(await canAccessWorkRecord(env,staff,item))) return await denyAndAudit(env,staff,request,"View Work Task");
   return new Response(await workTaskPage(env,staff,item),{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"}});
 }
 
@@ -3699,7 +3718,7 @@ if(request.method==="POST" && /^\/work-routing\/\d+\/progress$/.test(url.pathnam
   if(!sameOriginPost(request)) return new Response("Invalid request origin.",{status:403});
   const item=await env.DB.prepare("SELECT * FROM flt_work_items WHERE id=?").bind(Number(url.pathname.split("/")[2])).first();
   if(!item) return new Response("Work item not found.",{status:404});
-  if(!canActOnWork(staff,item)) return await denyAndAudit(env,staff,request,"Update Work Progress");
+  if(!(await canAccessWorkRecord(env,staff,item))) return await denyAndAudit(env,staff,request,"Update Work Progress");
   const form=await request.formData();
   const action=String(form.get("action")||"");
   const note=String(form.get("note")||"").trim().slice(0,2000);
@@ -3759,6 +3778,12 @@ if(request.method==="POST" && /^\/work-routing\/\d+\/redirect$/.test(url.pathnam
   const targetStaffId=Number(form.get("target_staff_id"));
   const reason=String(form.get("reason")||"");
   if(!targetStaffId || !reason.trim()) return new Response("Target employee and redirect reason are required.",{status:400});
+  const sourceItem=await env.DB.prepare("SELECT * FROM flt_work_items WHERE id=?").bind(workItemId).first();
+  if(!(await canAccessWorkRecord(env,staff,sourceItem))) return await denyAndAudit(env,staff,request,"Redirect Other Team Work");
+  if(!["Administrator","CEO"].includes(staff.user.role)) {
+    const target=await env.DB.prepare(`SELECT 1 AS ok FROM staff_teams t JOIN staff_team_members tm ON tm.team_id=t.id AND tm.active=1 WHERE t.manager_staff_user_id=? AND t.active=1 AND tm.staff_user_id=? LIMIT 1`).bind(staff.user.id,targetStaffId).first();
+    if(!target) return await denyAndAudit(env,staff,request,"Redirect Outside Team");
+  }
   await managerRedirectWork(env,workItemId,targetStaffId,reason,staff);
   return redirect("/work-routing");
 }
