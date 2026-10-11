@@ -5772,7 +5772,7 @@ request.method === "POST" &&
 /^\/client\/\d+\/assign$/.test(url.pathname)
 ) {
   if (!sameOriginPost(request)) return new Response("Invalid request origin.", {status:403});
-  if (!staff.authenticated || !staffCan(staff.user, "manage_assignments")) {
+  if (!staff.authenticated || !staffCan(staff.user, "manage_assignments") || !["Administrator","CEO"].includes(staff.user.role)) {
     await logStaffAccess(env, staff, request, "Client Assignment", "Denied");
     return new Response("You do not have permission to assign client records.", {status:403});
   }
@@ -5822,7 +5822,7 @@ request.method === "POST" &&
 /^\/client\/\d+\/assignment\/\d+\/end$/.test(url.pathname)
 ) {
   if (!sameOriginPost(request)) return new Response("Invalid request origin.", {status:403});
-  if (!staff.authenticated || !staffCan(staff.user, "manage_assignments")) {
+  if (!staff.authenticated || !staffCan(staff.user, "manage_assignments") || !["Administrator","CEO"].includes(staff.user.role)) {
     return new Response("You do not have permission to change client assignments.", {status:403});
   }
 
@@ -5862,7 +5862,7 @@ request.method === "POST" &&
 /^\/property\/\d+\/assign$/.test(url.pathname)
 ) {
   if (!sameOriginPost(request)) return new Response("Invalid request origin.", {status:403});
-  if (!staff.authenticated || !staffCan(staff.user, "manage_assignments")) {
+  if (!staff.authenticated || !staffCan(staff.user, "manage_assignments") || !["Administrator","CEO"].includes(staff.user.role)) {
     await logStaffAccess(env, staff, request, "Property Assignment", "Denied");
     return new Response("You do not have permission to assign property records.", {status:403});
   }
@@ -5912,7 +5912,7 @@ request.method === "POST" &&
 /^\/property\/\d+\/assignment\/\d+\/end$/.test(url.pathname)
 ) {
   if (!sameOriginPost(request)) return new Response("Invalid request origin.", {status:403});
-  if (!staff.authenticated || !staffCan(staff.user, "manage_assignments")) {
+  if (!staff.authenticated || !staffCan(staff.user, "manage_assignments") || !["Administrator","CEO"].includes(staff.user.role)) {
     return new Response("You do not have permission to change property assignments.", {status:403});
   }
 
