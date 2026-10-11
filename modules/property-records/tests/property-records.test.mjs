@@ -198,7 +198,9 @@ test('replacement intake succeeds when optional module is absent or unavailable,
     const db = coreDb(); let attemptedReceipts = 0;
     const response = await intake.fetch(submission(), { DB: db, PROPERTY_RECORDS_ENABLED: enabled, SEND_EMAIL: { async send() { attemptedReceipts++; return {}; } } });
     const result = await response.json();
-    assert.equal(response.status, 201);
+    assert.equal(response.status, 202); // Stub cannot link client/property; inquiry is safely retained.
+    assert.equal(result.account_processing_status, 'pending_recovery');
+    assert.equal(result.recovery_recorded, true);
     assert.equal(result.ok, true);
     assert.equal(result.inquiry_id, 1); // Optional research is fail-open and not part of the public response.
     assert.equal(attemptedReceipts, 2); // Customer receipt and internal notification; stub only, no mail leaves this test.
@@ -211,6 +213,9 @@ test('removing the module hook/import leaves a working core Worker', async () =>
     .replace(/    \/\/ Optional, fail-open county research;[\s\S]*?    \/\* --------------------------------------------------------\*\n\*       LINK CLIENT ACCOUNT/, '    /* --------------------------------------------------------*\\n*       LINK CLIENT ACCOUNT');
   const stripped = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
   const response = await stripped.default.fetch(submission(), { DB: coreDb(), SEND_EMAIL: { async send() { return {}; } } });
-  assert.equal(response.status, 201);
-  assert.equal((await response.json()).property_research, undefined);
+  assert.equal(response.status, 202);
+  const body = await response.json();
+  assert.equal(body.account_processing_status, 'pending_recovery');
+  assert.equal(body.recovery_recorded, true);
+  assert.equal(body.property_research, undefined);
 });
