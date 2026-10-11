@@ -235,7 +235,7 @@ test('fail-safe persists a recoverable inquiry in real SQLite when client linkin
     prepare(sql) {
       if (/intake_recovery_queue|flt_work_items/.test(sql)) {
         const stmt = sqlite.prepare(sql);
-        return { bind(...args) { return { async run() {
+        return { bind(...args) { return { async first() { return stmt.get(...args) ?? null; }, async run() {
           const result = stmt.run(...args);
           return { meta: { last_row_id: Number(result.lastInsertRowid) } };
         } }; }, async run() { stmt.run(); return { success: true }; } };
