@@ -1,3 +1,4 @@
+import { afterInquirySaved } from '../../modules/property-records/intake-hook.mjs';
 const CONSENT_VERSION = "FLTRACT-CONSENT-2026-09-27-V1";
 
 
@@ -962,7 +963,7 @@ export default {
 
 
 
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const origin = request.headers.get("Origin");
     const allowedOrigins = new Set(["https://fltract.com", "https://www.fltract.com", "https://fltract.b2bconsult4u.workers.dev"]);
     if (origin && !allowedOrigins.has(origin)) {
@@ -2507,6 +2508,14 @@ export default {
 
     }
 
+
+    // Optional, fail-open county research; disabled unless explicitly activated.
+    // Core inquiry has already been saved. Research errors cannot reject it.
+    try {
+      await afterInquirySaved({ inquiryId, input, env, ctx });
+    } catch (error) {
+      console.error('Optional property-record intake hook failed:', error);
+    }
 
     /* --------------------------------------------------------*
 *       LINK CLIENT ACCOUNT
