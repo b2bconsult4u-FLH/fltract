@@ -2599,7 +2599,7 @@ async function denyAndAudit(env,staff,request,action) {
 }
 function securityManagerAuthorized(staff) {
   if(!staff?.authenticated || !staff?.user?.active) return false;
-  return ["admin","developer","ceo"].includes(String(staff.user.role||"").toLowerCase());
+  return ["administrator","admin","developer","ceo"].includes(String(staff.user.role||"").toLowerCase());
 }
 async function auditPage(env,staff) {
   if(!securityManagerAuthorized(staff)) return null;
