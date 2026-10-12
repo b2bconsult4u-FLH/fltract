@@ -1,3 +1,5 @@
+import {verifiedAccessIdentity, sameOriginWrite, routeAuthorized, securityAudit, securityResponse, broadRecords, clientScopeSQL, inquiryScopeSQL} from "./security.mjs";
+
 const STATUSES = [
   "New",
   "Reviewing",
@@ -92,35 +94,7 @@ function idFromPath(pathname) {
 }
 
 
-function sameOriginPost(request) {
-  if (request.method !== "POST") {
-    return false;
-  }
-
-  const target = new URL(request.url);
-
-  const origin = request.headers.get("Origin");
-
-  if (origin) {
-    try {
-      if (new URL(origin).origin === target.origin) {
-        return true;
-      }
-    } catch {}
-  }
-
-  const referer = request.headers.get("Referer");
-
-  if (referer) {
-    try {
-      if (new URL(referer).origin === target.origin) {
-        return true;
-      }
-    } catch {}
-  }
-
-  return request.headers.get("Sec-Fetch-Site") === "same-origin";
-}
+function sameOriginPost(request) { return sameOriginWrite(request); }
 
 
 /* ============================================================
@@ -1325,57 +1299,12 @@ const STAFF_ROLES = [
   "Employee"
 ];
 
-function accessIdentity(request) {
-  return String(
-    request.headers.get("Cf-Access-Authenticated-User-Email") || ""
-  ).trim().toLowerCase();
-}
-
-async function staffContext(env, request) {
-  const email = accessIdentity(request);
-  if (!email) {
-    return {authenticated:false, email:"", user:null};
-  }
-
-  let user = await env.DB.prepare(`
-    SELECT * FROM staff_users WHERE email = ? LIMIT 1
+async function staffContext(env, request, verifiedEmail) {
+  // No request-header fallback or first-request bootstrap. Existing owner is retained.
+  const email = verifiedEmail || await verifiedAccessIdentity(request, env);
+  const user = await env.DB.prepare(`
+    SELECT * FROM staff_users WHERE LOWER(email) = ? LIMIT 1
   `).bind(email).first();
-
-  if (!user) {
-    const count = await env.DB.prepare(`
-      SELECT COUNT(*) AS n FROM staff_users
-    `).first();
-
-    if (Number(count?.n || 0) === 0) {
-      await env.DB.prepare(`
-        INSERT INTO staff_users (
-          email, display_name, role, active, bootstrap_admin
-        )
-        VALUES (?, ?, 'Administrator', 1, 1)
-      `).bind(email, email).run();
-
-      user = await env.DB.prepare(`
-        SELECT * FROM staff_users WHERE email = ? LIMIT 1
-      `).bind(email).first();
-
-      await env.DB.prepare(`
-        INSERT INTO staff_access_log (
-          staff_user_id, email, event_type, route, method, result, note
-        )
-        VALUES (?, ?, 'Bootstrap Administrator Created', '', '', 'Allowed',
-                'First authenticated Cloudflare Access identity established the initial Administrator account.')
-      `).bind(user?.id || null, email).run();
-    }
-  }
-
-  if (user?.active) {
-    await env.DB.prepare(`
-      UPDATE staff_users
-      SET last_seen_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `).bind(user.id).run();
-  }
-
   return {authenticated:true, email, user:user || null};
 }
 
@@ -1408,11 +1337,19 @@ function staffCan(user, capability) {
       "review_reports","prepare_referrals","manage_followups"
     ]),
     "Employee": new Set([
-      "admin_access","view_clients","research_property","manage_followups"
+      "admin_access","view_clients","research_property","review_reports","manage_followups"
     ])
   };
 
   return Boolean(matrix[role]?.has(capability));
+}
+
+function privateWorkAuthorized(staff, item) {
+  if (!staff?.user?.active) return false;
+  if (staffCan(staff.user,"manage_assignments")) return true;
+  return item.assigned_staff_user_id != null
+    ? Number(item.assigned_staff_user_id) === Number(staff.user.id)
+    : !!item.assigned_staff_email && String(item.assigned_staff_email).toLowerCase() === staff.email;
 }
 
 async function activeStaffUsers(env) {
@@ -1546,7 +1483,7 @@ async function logStaffAccess(env, ctx, request, eventType, result, note = "") {
       result,
       String(note || "").slice(0,1000)
     ).run();
-  } catch {}
+  } catch { console.error(JSON.stringify({event:"staff_access_audit_failure",route:new URL(request.url).pathname,eventType,result})); }
 }
 
 
@@ -1949,36 +1886,10 @@ async function checkWorkDeadlines(env, performedBy="FLTract SLA Monitor") {
 }
 
 
-export default {
-
-async fetch(request, env) {
+async function adminFetch(request, env, staff) {
 
 const url =
 new URL(request.url);
-
-
-if (!env.DB) {
-
-return new Response(
-"Database binding DB is missing.",
-{
-status:500
-}
-);
-
-}
-
-try {
-await ensureClientSchema(env);
-}
-catch (error) {
-console.error("Client account schema initialization failed:", error);
-return new Response(
-"Client account database initialization failed.",
-{status:500}
-);
-}
-
 
 
 async function ensureStarterWorkflows(env) {
@@ -2196,7 +2107,7 @@ async function submitTrainingSession(env, scenarioId, selectedActions, staff) {
 function trainingManagerAuthorized(staff) {
   if (!staff?.authenticated || !staff?.user?.active) return false;
   const role = String(staff.user.role || "").trim().toLowerCase();
-  return ["administrator","admin","developer","ceo","cfo","mid-level manager","manager"].includes(role);
+  return ["administrator","admin","developer","ceo","mid-level manager","manager"].includes(role);
 }
 
 async function trainingManagerPage(env, staff) {
@@ -2484,7 +2395,10 @@ async function workRoutingPage(env, staff, notice="", params=new URLSearchParams
   const filters=[...statuses,...Object.keys(groups)];
   const selected=filters.includes(params.get("status"))?params.get("status"):"";
   const args=groups[selected]|| (selected?[selected]:[]);
-  const where=args.length?`WHERE w.status IN (${args.map(()=>"?").join(",")})`:"";
+  const workScope=trainingManagerAuthorized(staff)?"1=1":`(w.assigned_staff_user_id=? OR (w.assigned_staff_user_id IS NULL AND LOWER(w.assigned_staff_email)=?))`;
+  const scopeArgs=trainingManagerAuthorized(staff)?[]:[staff.user.id,staff.email];
+  const where=`WHERE ${workScope}`+(args.length?` AND w.status IN (${args.map(()=>"?").join(",")})`:"");
+  args.unshift(...scopeArgs);
   const matched=await env.DB.prepare(`SELECT COUNT(*) total FROM flt_work_items w ${where}`).bind(...args).first();
   const total=Number(matched?.total||0), pages=Math.max(1,Math.ceil(total/25));
   const current=Math.max(1,Math.min(pages,Number.parseInt(params.get("page"),10)||1));
@@ -2501,8 +2415,8 @@ async function workRoutingPage(env, staff, notice="", params=new URLSearchParams
       SUM(CASE WHEN status='In Progress' THEN 1 ELSE 0 END) in_progress,
       SUM(CASE WHEN status IN ('Escalated','Escalation Required') THEN 1 ELSE 0 END) escalated,
       SUM(CASE WHEN status IN ('Deadline Warning','Overdue') THEN 1 ELSE 0 END) deadline_risk
-    FROM flt_work_items
-  `).first();
+    FROM flt_work_items w WHERE ${workScope}
+  `).bind(...scopeArgs).first();
   const rows=items.results.length?items.results.map(w=>`<tr class="work-summary">
     <td>#${Number(w.id)}</td>
     <td><strong>${esc(w.title||w.work_type)}</strong><div class="small">${esc(w.module_key)}</div></td>
@@ -2556,7 +2470,7 @@ async function managerRedirectWork(env, workItemId, targetStaffId, reason, staff
 }
 
 function auditUuid() {
-  return crypto.randomUUID ? crypto.randomUUID() : `audit-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return crypto.randomUUID();
 }
 async function sha256Hex(value) {
   const bytes=new TextEncoder().encode(value);
@@ -2564,18 +2478,24 @@ async function sha256Hex(value) {
   return Array.from(new Uint8Array(digest)).map(b=>b.toString(16).padStart(2,"0")).join("");
 }
 async function appendAuditEvent(env,{staff,action,subjectType,subjectId="",outcome="Success",reason="",metadata={},request=null}) {
-  const prev=await env.DB.prepare(`SELECT event_hash FROM flt_audit_events ORDER BY id DESC LIMIT 1`).first();
-  const uuid=auditUuid(), occurredAt=new Date().toISOString(), previousHash=prev?.event_hash||"";
+  const uuid=auditUuid(), occurredAt=new Date().toISOString();
   const actorEmail=staff?.email||"", actorRole=staff?.user?.role||staff?.role||"", actorId=staff?.user?.id||staff?.id||null;
   const method=request?.method||"", path=request?new URL(request.url).pathname:"";
-  const metadataJson=JSON.stringify(metadata||{});
-  const canonical=[uuid,occurredAt,actorId||"",actorEmail,actorRole,action,subjectType,String(subjectId||""),outcome,reason,metadataJson,method,path,previousHash].join("|");
-  const eventHash=await sha256Hex(canonical);
-  await env.DB.prepare(`
-    INSERT INTO flt_audit_events(event_uuid,occurred_at,actor_staff_user_id,actor_email,actor_role,action,subject_type,subject_id,outcome,reason,metadata_json,request_method,request_path,previous_hash,event_hash)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-  `).bind(uuid,occurredAt,actorId,actorEmail,actorRole,action,subjectType,String(subjectId||""),outcome,String(reason||"").slice(0,1000),metadataJson,method,path,previousHash,eventHash).run();
-  return uuid;
+  const metadataJson=JSON.stringify(metadata||{}), storedReason=String(reason||"").slice(0,1000), storedSubject=String(subjectId||"");
+  for (let attempt=0; attempt<5; attempt++) {
+    const prev=await env.DB.prepare(`SELECT event_hash FROM flt_audit_events ORDER BY id DESC LIMIT 1`).first();
+    const previousHash=prev?.event_hash||"";
+    const canonical=[uuid,occurredAt,actorId||"",actorEmail,actorRole,action,subjectType,storedSubject,outcome,storedReason,metadataJson,method,path,previousHash].join("|");
+    const eventHash=await sha256Hex(canonical);
+    // Compare latest hash within the same atomic INSERT to prevent chain forks.
+    const result=await env.DB.prepare(`
+      INSERT INTO flt_audit_events(event_uuid,occurred_at,actor_staff_user_id,actor_email,actor_role,action,subject_type,subject_id,outcome,reason,metadata_json,request_method,request_path,previous_hash,event_hash)
+      SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+      WHERE COALESCE((SELECT event_hash FROM flt_audit_events ORDER BY id DESC LIMIT 1),'')=?
+    `).bind(uuid,occurredAt,actorId,actorEmail,actorRole,action,subjectType,storedSubject,outcome,storedReason,metadataJson,method,path,previousHash,eventHash,previousHash).run();
+    if (Number(result.meta?.changes)===1) return uuid;
+  }
+  throw new Error("Audit chain append contention.");
 }
 async function verifyAuditChain(env) {
   const rows=await env.DB.prepare(`SELECT * FROM flt_audit_events ORDER BY id`).all();
@@ -2594,7 +2514,7 @@ function integrityAuthorized(staff) {
 }
 function dryRunAuthorized(staff) { return integrityAuthorized(staff); }
 async function denyAndAudit(env,staff,request,action) {
-  try { await appendAuditEvent(env,{staff,action,subjectType:"Route",subjectId:new URL(request.url).pathname,outcome:"Denied",reason:"Role is not authorized for this operation.",request}); } catch {}
+  try { await appendAuditEvent(env,{staff,action,subjectType:"Route",subjectId:new URL(request.url).pathname,outcome:"Denied",reason:"Role is not authorized for this operation.",request}); } catch { console.error(JSON.stringify({event:"denial_audit_failure",route:new URL(request.url).pathname,action})); }
   return new Response("Authorization required.",{status:403,headers:{"cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"}});
 }
 function securityManagerAuthorized(staff) {
@@ -3516,13 +3436,7 @@ function setFollowupDate(id, days) {
 
 
 
-const staff = await staffContext(env, request);
-
-/*
-  Assignment scope is being populated and verified before global
-  record filtering is activated. This prevents an incomplete
-  assignment rollout from accidentally hiding existing records.
-*/
+// Identity and route scope are enforced before this handler is entered.
 
 
 /* ============================================================
@@ -5528,6 +5442,7 @@ ON i.id = f.inquiry_id
 WHERE
 f.status = 'Open'
 AND i.archived = 0
+AND ${inquiryScopeSQL(staff.user,"i.id")}
 
 ORDER BY f.due_date ASC
 `).all();
@@ -6021,7 +5936,7 @@ This is the responsibility-based work queue for the signed-in FLTract staff iden
 <div class="panel">
 <h2>Teams I Manage</h2>
 <p class="section-note">
-Team membership is the manager supervision layer. It will be used when scoped record enforcement is activated after assignments are verified.
+Team membership defines the manager supervision layer used by record access checks.
 </p>
 <table>
 <thead><tr><th>Team</th><th>Active Members</th></tr></thead>
@@ -6055,13 +5970,13 @@ FROM inquiries i
 LEFT JOIN client_inquiries ci
   ON ci.inquiry_id = i.id
 WHERE
-  ci.inquiry_id IS NULL
+  ${broadRecords(staff.user) ? "ci.inquiry_id IS NULL" : "0=1"}
   AND TRIM(COALESCE(i.email,'')) <> ''
 ORDER BY i.created_at DESC, i.id DESC
 LIMIT 100
 `).all();
 
-for (const inquiry of unlinked.results) {
+for (const inquiry of (broadRecords(staff.user) ? unlinked.results : [])) {
   try {
     const client = await ensureClientForInquiry(env, inquiry);
     await ensurePropertyForInquiry(env, inquiry, client?.id);
@@ -6091,6 +6006,7 @@ LEFT JOIN client_inquiries ci
   ON ci.client_id = c.id
 LEFT JOIN inquiries i
   ON i.id = ci.inquiry_id
+WHERE ${clientScopeSQL(staff.user,"c.id")}
 GROUP BY c.id
 ORDER BY c.updated_at DESC, c.id DESC
 `).all();
@@ -8222,17 +8138,17 @@ let propertyRecord = null;
 
 try {
 clientAccount =
-await ensureClientForInquiry(
+broadRecords(staff.user) ? await ensureClientForInquiry(
 env,
 inquiry
-);
+) : await env.DB.prepare("SELECT c.* FROM clients c JOIN client_inquiries ci ON ci.client_id=c.id WHERE ci.inquiry_id=? LIMIT 1").bind(id).first();
 
 propertyRecord =
-await ensurePropertyForInquiry(
+broadRecords(staff.user) ? await ensurePropertyForInquiry(
 env,
 inquiry,
 clientAccount?.id
-);
+) : await env.DB.prepare("SELECT p.* FROM properties p JOIN property_inquiries pi ON pi.property_id=p.id WHERE pi.inquiry_id=? LIMIT 1").bind(id).first();
 }
 catch (error) {
 console.error(
@@ -9759,7 +9675,7 @@ SUM(
   END
 ) AS overdue_count
 FROM inquiries
-WHERE archived = 0
+WHERE archived = 0 AND ${inquiryScopeSQL(staff.user,"inquiries.id")}
 `)
 .bind(today,today)
 .first();
@@ -9769,7 +9685,7 @@ const archivedSummary =
 await env.DB.prepare(`
 SELECT COUNT(*) AS archived_count
 FROM inquiries
-WHERE archived = 1
+WHERE archived = 1 AND ${inquiryScopeSQL(staff.user,"inquiries.id")}
 `)
 .first();
 
@@ -9777,7 +9693,7 @@ WHERE archived = 1
 let sql = `
 SELECT *
 FROM inquiries
-WHERE archived = ${showArchived ? 1 : 0}
+WHERE archived = ${showArchived ? 1 : 0} AND ${inquiryScopeSQL(staff.user,"inquiries.id")}
 `;
 
 
@@ -10254,6 +10170,46 @@ headers:{
 }
 );
 
+ }
+
+export default {
+async fetch(request, env) {
+  const correlationId = crypto.randomUUID();
+  let email;
+  try { email = await verifiedAccessIdentity(request, env); }
+  catch {
+    console.log(JSON.stringify({event:"private_access",path:new URL(request.url).pathname,method:request.method,result:"Denied",reason:"Invalid or missing Access JWT",correlationId}));
+    return securityResponse("Authentication required.",401);
+  }
+  if (!env.DB) return securityResponse("Service unavailable.",503);
+  let staff;
+  try {
+    staff = await staffContext(env, request, email);
+    if (!staff.user?.active || !staffCan(staff.user,"admin_access")) {
+      await securityAudit(env,staff,request,"Denied","Unknown or inactive staff",correlationId);
+      return securityResponse("Authorization required.",403);
+    }
+    const decision = await routeAuthorized(env,staff,request,{staffCan,staffHasClientScope,staffHasPropertyScope,canActOnWork:privateWorkAuthorized});
+    if (!decision.allowed) {
+      await securityAudit(env,staff,request,"Denied",decision.reason,correlationId);
+      return securityResponse(decision.status===404?"Not found.":"Authorization required.",decision.status);
+    }
+    // Persist the authorized attempt before any schema/business changes.
+    await securityAudit(env,staff,request,"Attempt","Authorized private request",correlationId);
+    await ensureClientSchema(env);
+    const response = await adminFetch(request,env,staff);
+    try {
+      await securityAudit(env,staff,request,response.status<400?"Completed":"Rejected",`HTTP ${response.status}`,correlationId);
+    } catch {
+      // An operation may already have committed. Preserve its response to avoid
+      // inviting a duplicate submission; retain attempt + structured failure log.
+      console.error(JSON.stringify({event:"private_access_audit_failure",correlationId,status:response.status,phase:"completion"}));
+    }
+    return response;
+  } catch {
+    console.error(JSON.stringify({event:"private_access_failure",correlationId,phase:"authorization_or_handler"}));
+    return securityResponse("Request could not be completed. Contact the administrator.",503);
+  }
 },
 
 async scheduled(controller, env, ctx) {

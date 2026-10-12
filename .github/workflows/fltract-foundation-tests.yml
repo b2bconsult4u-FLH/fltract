@@ -2,6 +2,7 @@ name: FLTract Foundation Tests
 on:
   push:
     branches:
+      - main
       - integration/property-records-current-main-2026-10-10
   pull_request:
     paths:
@@ -10,6 +11,8 @@ on:
       - 'workers/admin/**'
       - 'contact/**'
       - '.github/workflows/fltract-foundation-tests.yml'
+      - 'package.json'
+      - 'package-lock.json'
   workflow_dispatch:
 jobs:
   test:
@@ -21,6 +24,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Install pinned dependencies
+        run: npm ci --ignore-scripts
       - name: Check admin Worker syntax
         run: node --check workers/admin/worker.mjs
       - name: Run manager recovery access acceptance tests
@@ -29,3 +34,6 @@ jobs:
         run: node --test modules/property-records/tests/milestone-c-recovery.test.mjs
       - name: Run property-record and intake-contract tests
         run: node --test modules/property-records/tests/*.test.mjs
+      - name: Run admin security acceptance tests
+        run: node --test workers/admin/tests/*.test.mjs
+

@@ -1,6 +1,6 @@
 # Issue #19 — security validation, 2026-10-12
 
-Status: OPEN. Current edge checks pass on workers.dev, but origin authorization is incomplete. This review does not certify production secure. Main reviewed: c38bddc73632f840e11c6d995a82c59bb1522129; admin blob f9f98484da129697f8a25a8b268e799fe5782572. No production settings, accounts, data, or policies were changed.
+Status: OPEN pending live owner-session validation. The review branch now implements origin JWT verification, all-route capabilities, record/list scope, disabled automatic bootstrap, and persistent attempt/completion audit. This review does not certify production secure. Main reviewed: c38bddc73632f840e11c6d995a82c59bb1522129; admin blob f9f98484da129697f8a25a8b268e799fe5782572. No production accounts, data, or Access policies were changed. Development updates below supersede the original findings.
 
 ## Confirmed production configuration
 
@@ -59,3 +59,21 @@ Before closing #19: configure verified issuer/audience; preserve the existing Ad
 Verify the owner can still log in, read assigned/global records as intended, access audit, and complete an approved synthetic operation through the current URL. Confirm preview/custom-route coverage independently. Only then deploy the full gate and permissions; retain rollback version and repeat read-only live denials plus an authorized session smoke test. This review branch changes no Access policy or deployed Worker, so current administrator login remains intact.
 
 References: https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/ ; https://developers.cloudflare.com/workers/best-practices/workers-best-practices/
+
+
+## Development update — October 12
+
+Implemented in worker.mjs and new security.mjs:
+
+- Pinned jose 6.2.12 verifies RS256 signature, issuer, audience, expiration, not-before, issue time, subject and email. Header email is ignored. JWKS resolvers are cached with bounded cardinality; no identities are cached. JWKS outage fails closed.
+- Gateway authenticates before DB access, requires an active existing staff account, then matches explicit method/path capabilities and record scope. Automatic first-identity bootstrap is removed. Existing Administrator row and broad Administrator/CEO record access are preserved.
+- Existing assignment policy now filters inquiry dashboard/counts, client directory, follow-ups and work lists. Unassigned inquiry/client/property/library/task IDs are denied before handlers. Global integrity/dry-run/export are restricted until a scoped implementation exists. Manager intake recovery and management routing retain explicit management access. Employee researchers receive report-read capability to view their own scoped research, without approval rights.
+- Present Origin mismatch is an immediate rejection; Referer/Fetch-Site fallback applies only when Origin is absent.
+- A registered Administrator can open security audit. CFO no longer receives generic task-manager privileges from trainingManagerAuthorized.
+- Durable actor/correlation/route audit attempt must succeed before business changes. Denials and completions are recorded. Authentication denials are structured logs without DB access or trusting spoofed actor headers. Legacy audit errors and completion-audit failures are visible structured incidents. A completion audit failure preserves the already-completed response to avoid inducing duplicate writes; this remains a documented limitation of the legacy non-atomic handlers.
+- Audit chain insert compares predecessor inside the atomic INSERT and retries contention; hashes use the stored truncated reason. Real SQLite concurrency and long-reason verification tests pass. Historic audit rows are not rewritten.
+- wrangler config declares issuer/audience, keeps workers.dev login, requests previews disabled at production deployment, and enables observability. Version-only upload does not apply these route-exposure settings. CI installs locked dependencies, covers main and runs the security suite.
+
+Validation: 89 tests pass (34 existing, 55 security). Coverage includes 56 concrete private route variants with anonymous and forged JWT denial before DB access, bad signature/issuer/audience/time claims, unknown/inactive staff, owner read/write, role denial, unassigned IDs, real SQLite list rendering excluding hidden rows, audit outage before mutation, and concurrent hash-chain insertion. Wrangler 4.149.0 dry-run bundles successfully. These tests use synthetic identities and data, never a forged production JWT or production write.
+
+Remaining gate: verify a real owner Access session against the uploaded candidate, verify operational error/audit handling, and then promote the tested version and apply production preview/observability settings. No claim of full production acceptance is made until that owner session succeeds. Existing policy has no explicit MFA requirement; application JWT/registration checks do not change the identity-provider policy.
