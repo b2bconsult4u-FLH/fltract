@@ -1,6 +1,6 @@
 # Issue #19 — security validation, 2026-10-12
 
-Status: OPEN pending live owner-session validation. The review branch now implements origin JWT verification, all-route capabilities, record/list scope, disabled automatic bootstrap, and persistent attempt/completion audit. This review does not certify production secure. Main reviewed: c38bddc73632f840e11c6d995a82c59bb1522129; admin blob f9f98484da129697f8a25a8b268e799fe5782572. No production accounts, data, or Access policies were changed. Development updates below supersede the original findings.
+Status: IMPLEMENTED AND PROMOTED after owner-session validation. The review branch now implements origin JWT verification, all-route capabilities, record/list scope, disabled automatic bootstrap, and persistent attempt/completion audit. This review does not certify production secure. Main reviewed: c38bddc73632f840e11c6d995a82c59bb1522129; admin blob f9f98484da129697f8a25a8b268e799fe5782572. No production accounts, data, or Access policies were changed. Development updates below supersede the original findings.
 
 ## Confirmed production configuration
 
@@ -77,3 +77,14 @@ Implemented in worker.mjs and new security.mjs:
 Validation: 89 tests pass (34 existing, 55 security). Coverage includes 56 concrete private route variants with anonymous and forged JWT denial before DB access, bad signature/issuer/audience/time claims, unknown/inactive staff, owner read/write, role denial, unassigned IDs, real SQLite list rendering excluding hidden rows, audit outage before mutation, and concurrent hash-chain insertion. Wrangler 4.149.0 dry-run bundles successfully. These tests use synthetic identities and data, never a forged production JWT or production write.
 
 Remaining gate: verify a real owner Access session against the uploaded candidate, verify operational error/audit handling, and then promote the tested version and apply production preview/observability settings. No claim of full production acceptance is made until that owner session succeeds. Existing policy has no explicit MFA requirement; application JWT/registration checks do not change the identity-provider policy.
+
+
+## Production release — October 12, 14:55 Eastern
+
+Owner laptop acceptance succeeded on the authenticated candidate: the inquiry list, Client Accounts and Security & Audit opened. Read-only D1 aggregate independently confirmed completed visits under the active Administrator account (four root visits, two client-directory visits, three audit-page visits since 18:40 UTC). No client data or token was fetched for that verification.
+
+PR #21 merged as b1c111ab38662d51477c3da4dd82d0a8b5ad09d1. The navigation/access-table update passed all 89 local tests and GitHub CI run 38294054832. Source commit 0b41b3b0e33c33d19743bf737f2ea90e0693699f was uploaded as version 113 and promoted at 100%. Enabling persisted observability produced current version 115, 8c5675b8-4b59-4079-afb4-8dc39f0e49f5, with the same script etag 7c11f71500a8074aa7dcdb88307de09720b1e4b0498dab0c76933a7305d40fc4.
+
+The permanent workers.dev login remains enabled. All preview URLs are disabled. Observability and invocation log persistence are enabled at sampling rate 1; DB, SEND_EMAIL, issuer and audience bindings are preserved. Twelve post-promotion anonymous/spoofed GET probes returned Access redirects. A new Private Access table displays authenticated requests separately from the consequential-action chain; Client Accounts has a direct outlined header link and a clearer inquiry-page button.
+
+Permanent login: https://fltractadmin-fb08.b2bconsult4u.workers.dev/ . The temporary candidate links are retired. This release completes the specifically reviewed identity/route authorization gate, not a certification of all future modules, business workflows or identity-provider MFA policy. The documented legacy completion-audit atomicity limitation remains visible. No live referral email or production business-write test was performed.
