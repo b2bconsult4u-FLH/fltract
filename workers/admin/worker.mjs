@@ -2526,7 +2526,15 @@ async function auditPage(env,staff) {
   const integrity=await verifyAuditChain(env);
   const events=await env.DB.prepare(`SELECT * FROM flt_audit_events ORDER BY id DESC LIMIT 200`).all();
   const rows=events.results.map(e=>`<tr><td>${esc(e.occurred_at)}</td><td>${esc(e.actor_email||"System")}</td><td>${esc(e.actor_role)}</td><td>${esc(e.action)}</td><td>${esc(e.subject_type)} #${esc(e.subject_id)}</td><td>${esc(e.outcome)}</td><td>${esc(e.reason)}</td></tr>`).join("");
+  const access=await env.DB.prepare(`
+    SELECT l.created_at,l.email,l.event_type,l.route,l.method,l.result,l.note,s.role
+    FROM staff_access_log l LEFT JOIN staff_users s ON s.id=l.staff_user_id
+    ORDER BY l.id DESC LIMIT 100
+  `).all();
+  const accessRows=access.results.map(e=>`<tr><td>${esc(e.created_at)}</td><td>${esc(e.email||"Unknown")}</td><td>${esc(e.role||"")}</td><td>${esc(e.method)} ${esc(e.route)}</td><td>${esc(e.result)}</td></tr>`).join("");
   return page(`<h1>Security & Audit</h1>
+    <div class="action-row" style="margin-bottom:18px"><a class="nav-button" href="/">Property Inquiries</a><a class="nav-button" href="/clients">Client Accounts</a></div>
+    <div class="panel"><h2>Recent Private Access</h2><p class="section-note">Authenticated page access and authorized request attempts are recorded here. A completed page visit does not create a consequential-action event below.</p><table><thead><tr><th>Time</th><th>Actor</th><th>Role</th><th>Request</th><th>Result</th></tr></thead><tbody>${accessRows||'<tr><td colspan="5" class="empty">No private access records yet.</td></tr>'}</tbody></table></div>
     <div class="panel"><h2>Append-Only Audit Chain</h2><p class="section-note">Each audit event is cryptographically chained to the event before it. This detects alteration or deletion inside the retained chain; it does not replace database backups or infrastructure security.</p>
     <p><strong>Integrity:</strong> ${integrity.valid?`Verified — ${integrity.count} events`:`FAILED at event ${integrity.eventId}`}</p></div>
     <div class="panel"><h2>Recent Consequential Actions</h2><table><thead><tr><th>Time</th><th>Actor</th><th>Role</th><th>Action</th><th>Subject</th><th>Outcome</th><th>Reason</th></tr></thead><tbody>${rows||'<tr><td colspan="7" class="empty">No audit events recorded yet.</td></tr>'}</tbody></table></div>
@@ -2978,6 +2986,15 @@ header .wrap{
   color:#e4c98d;
 }
 
+nav a.nav-client{
+  display:inline-block;
+  padding:6px 10px;
+  border:1px solid #e4c98d;
+  border-radius:6px;
+}
+nav a.nav-client:hover{background:#e4c98d;color:#173c36;}
+nav a.nav-client:focus-visible{outline:3px solid #e4c98d;outline-offset:3px;}
+
 nav a{
   color:#fff;
   text-decoration:none;
@@ -3389,6 +3406,7 @@ FL<span>TRACT</span> Admin
 
 <nav>
 <a href="/">Inquiries</a>
+<a class="nav-client" href="/clients">Client Accounts</a>
 <a href="/followups">Follow Ups</a>
 <a href="/integrity">Data Integrity</a>
 <a href="/dry-run">Dry Run</a>
@@ -10034,7 +10052,7 @@ ${showArchived
 </div>
 
 <div class="action-row">
-<a class="back" href="/clients">
+<a class="nav-button" href="/clients">
 Client Accounts
 </a>
 
