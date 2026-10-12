@@ -1,0 +1,14 @@
+{
+  "name": "fltract",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test modules/property-records/tests/*.test.mjs workers/admin/tests/*.test.mjs"
+  },
+  "dependencies": {
+    "jose": "6.2.12"
+  },
+  "devDependencies": {
+    "wrangler": "^4.149.0"
+  }
+}
