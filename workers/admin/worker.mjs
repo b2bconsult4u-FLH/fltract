@@ -1,3 +1,4 @@
+import {processMiniCompQueue, ensureResearchQueueSchema, MINI_COMP_ADAPTERS} from "./mini-comp-research.mjs";
 import {verifiedAccessIdentity, sameOriginWrite, routeAuthorized, securityAudit, securityResponse, broadRecords, clientScopeSQL, inquiryScopeSQL} from "./security.mjs";
 
 const STATUSES = [
@@ -867,9 +868,10 @@ async function ensureMiniCompForProperty(env, propertyId) {
       task_type,
       status
     )
-    VALUES (?, ?, 'Research Mini-Comp', 'Queued')
+    SELECT ?, ?, 'Research Mini-Comp', 'Queued'
+    WHERE NOT EXISTS (SELECT 1 FROM mini_comp_queue WHERE report_id = ?)
   `)
-  .bind(propertyId, report.id)
+  .bind(propertyId, report.id, report.id)
   .run();
 
   await ensureLibraryItemForMiniComp(env, propertyId, report);
@@ -1220,8 +1222,8 @@ Object.assign(COUNTY_RESEARCH_ADAPTERS, {
   "Indian River": {
     key:"indian_river",
     sourceName:"Indian River County Property Appraiser",
-    mode:"Published Dataset",
-    status:"Priority Adapter Pending"
+    mode:"Direct public GIS query",
+    status:"Automated"
   },
   "Brevard": {
     key:"brevard",
@@ -1886,7 +1888,7 @@ async function checkWorkDeadlines(env, performedBy="FLTract SLA Monitor") {
 }
 
 
-async function adminFetch(request, env, staff) {
+async function adminFetch(request, env, staff, ctx) {
 
 const url =
 new URL(request.url);
@@ -3611,8 +3613,9 @@ if(request.method==="GET" && /^\/work-routing\/\d+\/history$/.test(url.pathname)
 
 if(request.method==="GET" && /^\/work-routing\/\d+$/.test(url.pathname)){
   if(!staff?.authenticated || !staff?.user?.active) return await denyAndAudit(env,staff,request,"View Work Task");
-  const item=await env.DB.prepare(`SELECT w.*,q.property_id AS routing_property_id FROM flt_work_items w
-    LEFT JOIN mini_comp_queue q ON w.subject_type='mini_comp_queue' AND w.subject_id=q.id WHERE w.id=?`)
+  const item=await env.DB.prepare(`SELECT w.*,COALESCE(q.property_id,r.property_id) AS routing_property_id FROM flt_work_items w
+    LEFT JOIN mini_comp_queue q ON w.subject_type='mini_comp_queue' AND w.subject_id=q.id
+    LEFT JOIN mini_comp_reports r ON w.subject_type='mini_comp_reports' AND w.subject_id=r.id WHERE w.id=?`)
     .bind(Number(url.pathname.split("/")[2])).first();
   if(!item) return new Response("Work item not found.",{status:404});
   if(!canActOnWork(staff,item)) return await denyAndAudit(env,staff,request,"View Work Task");
@@ -6622,242 +6625,19 @@ headers:{
 
 
 /* ============================================================
-   OFFICIAL COUNTY RESEARCH — ST. LUCIE FIRST ADAPTER
+   OFFICIAL COUNTY RESEARCH — DURABLE AUTOMATIC QUEUE
    ============================================================ */
-
-if (
-request.method === "POST" &&
-/^\/property\/\d+\/official-research$/.test(url.pathname)
-) {
-  if (!sameOriginPost(request)) {
-    return new Response("Invalid request origin.", {status:403});
-  }
-
-  const propertyId = Number(url.pathname.split("/").filter(Boolean)[1]);
-  const property = await env.DB.prepare(`
-    SELECT * FROM properties WHERE id = ? LIMIT 1
-  `).bind(propertyId).first();
-
-  if (!property) {
-    return new Response("Property record not found.", {status:404});
-  }
-
-  const adapter = COUNTY_RESEARCH_ADAPTERS[property.county];
-
-  if (!adapter) {
-    return new Response("No official county adapter is registered for this county.", {status:400});
-  }
-
-  const run = await env.DB.prepare(`
-    INSERT INTO official_research_runs (
-      property_id, county, adapter_key, status, source_name
-    )
-    VALUES (?, ?, ?, 'Processing', ?)
-  `).bind(propertyId, property.county || "", adapter.key, adapter.sourceName).run();
-
-  const runId = Number(run?.meta?.last_row_id) || 0;
-
-  if (property.county !== "St. Lucie") {
-    const isPriority = PRIORITY_COUNTIES.has(property.county);
-    const note = isPriority
-      ? `${property.county} is a priority FLTract county. Its automated adapter is pending; use the official county source for manual research until activation.`
-      : `${property.county} is supported statewide. Automated retrieval is not active for this county; complete research from the official county source and retain the source in the Property Record.`;
-
-    await env.DB.prepare(`
-      UPDATE official_research_runs
-      SET status = ?,
-          result_note = ?,
-          completed_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `).bind(
-      isPriority ? "Priority Adapter Pending" : "Manual Official Research",
-      note,
-      runId
-    ).run();
-
-    return redirect(`/property/${propertyId}`);
-  }
-
-  try {
-    const where = stLucieSubjectWhere(property);
-    if (!where) {
-      throw new Error("Enter a parcel ID or complete property location before running official research.");
-    }
-
-    const subjectData = await queryOfficialArcGIS(ST_LUCIE_PARCEL_QUERY, {
-      where,
-      outFields:"ParcelID,PropertyID,LandUseCode,LandUseCodeDescription,ImprovedStatus,TotalArea,Zoning,SiteAddress,SiteCity,SiteZIP,Owner1,Owner2,MailAddress1,MailAddress2,MailCity,MailState,MailZipCode,TotalAppraisedValue,TotalAssessedValue,TotalTaxableValue,LegalDescription",
-      returnGeometry:"true",
-      outSR:"3857",
-      resultRecordCount:"5"
-    });
-
-    const matches = subjectData.features || [];
-
-    if (matches.length !== 1) {
-      const note = matches.length
-        ? `${matches.length} possible parcels matched. FLTract stopped for parcel verification instead of guessing.`
-        : "No exact official parcel match was found. Verify the address or enter the official parcel ID.";
-
-      await env.DB.prepare(`
-        UPDATE official_research_runs
-        SET status = 'Needs Verification',
-            subject_matches = ?,
-            result_note = ?,
-            completed_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-      `).bind(matches.length, note, runId).run();
-
-      await env.DB.prepare(`
-        UPDATE properties
-        SET research_status = 'Needs Verification', updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-      `).bind(propertyId).run();
-
-      return redirect(`/property/${propertyId}`);
-    }
-
-    const feature = matches[0];
-    const a = feature.attributes || {};
-    const mailing = [
-      a.MailAddress1,
-      a.MailAddress2,
-      [a.MailCity,a.MailState,a.MailZipCode].filter(Boolean).join(" ")
-    ].filter(Boolean).join(", ");
-
-    await env.DB.prepare(`
-      UPDATE properties
-      SET
-        parcel_id = ?,
-        legal_description = ?,
-        owner_name = ?,
-        owner_mailing_address = ?,
-        assessed_value = ?,
-        market_value = ?,
-        taxable_value = ?,
-        zoning = ?,
-        land_use = ?,
-        data_source = 'St. Lucie County Property Appraiser — Public Parcel Layer',
-        data_verified_at = CURRENT_TIMESTAMP,
-        research_status = 'Researching',
-        updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `).bind(
-      a.ParcelID || "",
-      a.LegalDescription || "",
-      [a.Owner1,a.Owner2].filter(Boolean).join(" / "),
-      mailing,
-      a.TotalAssessedValue == null ? "" : String(a.TotalAssessedValue),
-      a.TotalAppraisedValue == null ? "" : String(a.TotalAppraisedValue),
-      a.TotalTaxableValue == null ? "" : String(a.TotalTaxableValue),
-      a.Zoning || "",
-      a.LandUseCodeDescription || a.LandUseCode || "",
-      propertyId
-    ).run();
-
-    const report = await ensureMiniCompForProperty(env, propertyId);
-    let imported = 0;
-
-    if (feature.geometry && report?.id) {
-      const salesData = await queryOfficialArcGIS(ST_LUCIE_PARCEL_QUERY, {
-        where:`SalePrice > 0 AND ParcelID <> '${researchSql(a.ParcelID || "")}'`,
-        geometry:JSON.stringify(feature.geometry),
-        geometryType:"esriGeometryPolygon",
-        inSR:"3857",
-        spatialRel:"esriSpatialRelIntersects",
-        distance:"20",
-        units:"esriSRUnit_StatuteMile",
-        outFields:"ParcelID,PropertyID,LandUseCodeDescription,ImprovedStatus,TotalArea,Zoning,SiteAddress,SiteCity,SalePrice,SaleDate,NALCode",
-        returnGeometry:"false",
-        orderByFields:"SaleDate DESC",
-        resultRecordCount:"25"
-      });
-
-      for (const candidate of (salesData.features || []).slice(0,10)) {
-        const s = candidate.attributes || {};
-        const saleDate = Number.isFinite(Number(s.SaleDate))
-          ? new Date(Number(s.SaleDate)).toISOString().slice(0,10)
-          : "";
-
-        const exists = await env.DB.prepare(`
-          SELECT id FROM mini_comp_comparables
-          WHERE report_id = ? AND parcel_id = ? AND sale_date = ? AND sale_price = ?
-          LIMIT 1
-        `).bind(report.id, s.ParcelID || "", saleDate, Number(s.SalePrice) || 0).first();
-
-        if (exists) continue;
-
-        await env.DB.prepare(`
-          INSERT INTO mini_comp_comparables (
-            report_id, property_location, county, parcel_id,
-            sale_date, sale_price, qualified_sale, improvements,
-            source_name, source_reference, source_retrieved_at,
-            selection_reason, notes
-          )
-          VALUES (?, ?, 'St. Lucie', ?, ?, ?, 'Unknown', ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
-        `).bind(
-          report.id,
-          [s.SiteAddress,s.SiteCity].filter(Boolean).join(", ") || `Parcel ${s.ParcelID || ""}`,
-          s.ParcelID || "",
-          saleDate,
-          Number(s.SalePrice) || null,
-          [
-            s.LandUseCodeDescription,
-            s.ImprovedStatus ? `Improved: ${s.ImprovedStatus}` : "",
-            s.Zoning ? `Zoning: ${s.Zoning}` : ""
-          ].filter(Boolean).join(" · "),
-          "St. Lucie County Property Appraiser",
-          `Public Parcel Layer — PropertyID ${s.PropertyID || ""}; Parcel ${s.ParcelID || ""}`,
-          "Automated nearby-sale candidate within the configured 20-mile research radius.",
-          `Human review required. County NAL code: ${s.NALCode || "not recorded"}. County TotalArea: ${s.TotalArea ?? "not recorded"}; FLTract has not assumed this field is acreage.`
-        ).run();
-
-        imported++;
-      }
-
-      await env.DB.prepare(`
-        UPDATE mini_comp_reports
-        SET status = CASE WHEN ? > 0 THEN 'Draft' ELSE status END,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-      `).bind(imported, report.id).run();
-
-      await syncMiniCompLibraryStatus(env, propertyId, report.id);
-    }
-
-    const note =
-      `Official subject parcel verified. Imported ${imported} nearby sale candidate(s) for human comparability review.`;
-
-    await env.DB.prepare(`
-      UPDATE official_research_runs
-      SET status = 'Completed',
-          subject_matches = 1,
-          comparable_candidates = ?,
-          result_note = ?,
-          completed_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `).bind(imported, note, runId).run();
-
-    if (property.primary_inquiry_id) {
-      await env.DB.prepare(`
-        INSERT INTO activity_log (inquiry_id, activity_type, activity_note)
-        VALUES (?, 'Official Property Research', ?)
-      `).bind(property.primary_inquiry_id, `${propertyCode(propertyId)} — ${note}`).run();
-    }
-
-    return redirect(`/property/${propertyId}`);
-  }
-  catch (error) {
-    const note = `Official research stopped safely: ${String(error.message || error).slice(0,1200)}`;
-
-    await env.DB.prepare(`
-      UPDATE official_research_runs
-      SET status = 'Failed', result_note = ?, completed_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `).bind(note, runId).run();
-
-    return redirect(`/property/${propertyId}`);
-  }
+if (request.method === "POST" && /^\/property\/\d+\/official-research$/.test(url.pathname)) {
+  const propertyId=Number(url.pathname.split("/")[2]);
+  const property=await env.DB.prepare("SELECT * FROM properties WHERE id=? LIMIT 1").bind(propertyId).first();
+  if(!property)return new Response("Property record not found.",{status:404});
+  if(!MINI_COMP_ADAPTERS[property.county])return new Response("Automatic research is not yet connected for this county.",{status:400});
+  const report=await ensureMiniCompForProperty(env,propertyId);
+  await ensureResearchQueueSchema(env);
+  if(report.status==="Approved")return new Response("Approved report is preserved. Create a reviewed revision before refreshing research.",{status:409});
+  await env.DB.prepare(`UPDATE mini_comp_queue SET status='Queued',attempts=0,last_error='',available_at=CURRENT_TIMESTAMP,lease_token=NULL,lease_expires_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE report_id=? AND status<>'Processing'`).bind(report.id).run();
+  if(ctx?.waitUntil)ctx.waitUntil(processMiniCompQueue(env,{limit:1}));
+  return redirect(`/property/${propertyId}/mini-comp`);
 }
 
 
@@ -7122,6 +6902,15 @@ request.method === "POST" &&
   const approvedVersion =
     await snapshotApprovedMiniComp(env, property, approvedReport);
 
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO flt_work_routing_events(work_item_id,event_type,from_staff_email,reason,performed_by)
+      SELECT id,'Mini-Comp Approved',assigned_staff_email,'Report approved and preserved in the report library.',?
+      FROM flt_work_items WHERE subject_type='mini_comp_reports' AND subject_id=? AND work_type='Review Mini-Comp' AND status NOT IN ('Completed','Closed','Cancelled')`).bind(staff.email,report.id),
+    env.DB.prepare(`UPDATE flt_work_items SET status='Completed',completed_at=CURRENT_TIMESTAMP
+      WHERE subject_type='mini_comp_reports' AND subject_id=? AND work_type='Review Mini-Comp' AND status NOT IN ('Completed','Closed','Cancelled')`).bind(report.id)
+  ]);
+
+
   if (property.primary_inquiry_id) {
     await env.DB.prepare(`
       INSERT INTO activity_log (inquiry_id, activity_type, activity_note)
@@ -7320,6 +7109,7 @@ request.method === "GET" &&
     ORDER BY sale_date DESC, id DESC
   `).bind(report.id).all();
 
+  const researchJob=await env.DB.prepare("SELECT status,attempts,last_error,updated_at FROM mini_comp_queue WHERE report_id=? ORDER BY id DESC LIMIT 1").bind(report.id).first();
   const metrics = miniCompMetrics(comps.results);
   const qualifiedCount = comps.results.filter(c => c.qualified_sale === "Yes").length;
 
@@ -7373,6 +7163,10 @@ request.method === "GET" &&
 
 <div class="panel">
 <h1>Mini-Comp — ${esc(propertyCode(propertyId))}</h1>
+<p class="section-note">Automatic research: <strong>${esc(researchJob?.status||"Not queued")}</strong> · Attempts: ${Number(researchJob?.attempts||0)}. The background runner checks for work every five minutes.</p>
+${researchJob?.last_error?`<p class="section-note" role="status">Research needs attention: ${esc(researchJob.last_error)}</p>`:""}
+${MINI_COMP_ADAPTERS[property.county]&&report.status!=="Approved"?`<form method="post" action="/property/${propertyId}/official-research"><button type="submit">Run / Retry Automatic Research</button></form>`:""}
+
 
 <p class="section-note">
 This private report workspace compares the subject property with documented public-record sales. FLTract retains the source trail and retrieval date for each comparable. The report stays inside the private account until it has been reviewed; nothing on this page is automatically emailed to a client.
@@ -8023,7 +7817,7 @@ This adapter checks authoritative county-published property data before it enter
 
 ${countyAdapter ? `
 <form method="post" action="/property/${property.id}/official-research" style="margin-top:14px">
-<button type="submit">${property.county === "St. Lucie" ? "Run Official County Research" : "Check County Adapter"}</button>
+<button type="submit">${MINI_COMP_ADAPTERS[property.county] ? "Run Official County Research" : "Check County Adapter"}</button>
 </form>
 <p class="section-note">
 ${property.county === "St. Lucie"
@@ -10191,7 +9985,7 @@ headers:{
  }
 
 export default {
-async fetch(request, env) {
+async fetch(request, env, ctx) {
   const correlationId = crypto.randomUUID();
   let email;
   try { email = await verifiedAccessIdentity(request, env); }
@@ -10215,7 +10009,7 @@ async fetch(request, env) {
     // Persist the authorized attempt before any schema/business changes.
     await securityAudit(env,staff,request,"Attempt","Authorized private request",correlationId);
     await ensureClientSchema(env);
-    const response = await adminFetch(request,env,staff);
+    const response = await adminFetch(request,env,staff,ctx);
     try {
       await securityAudit(env,staff,request,response.status<400?"Completed":"Rejected",`HTTP ${response.status}`,correlationId);
     } catch {
@@ -10231,6 +10025,13 @@ async fetch(request, env) {
 },
 
 async scheduled(controller, env, ctx) {
+  if(controller.cron==="*/5 * * * *"){
+    ctx.waitUntil((async()=>{
+      await ensureClientSchema(env);
+      const result=await processMiniCompQueue(env);
+      console.log("FLTract automatic mini-comp research",JSON.stringify(result));
+    })());
+  }
   if(controller.cron==="0 * * * *"){
     ctx.waitUntil((async()=>{
       await ensureClientSchema(env);

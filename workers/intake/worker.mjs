@@ -452,9 +452,10 @@ async function linkInquiryToProperty(
         task_type,
         status
       )
-      VALUES (?, ?, 'Research Mini-Comp', 'Queued')
+      SELECT ?, ?, 'Research Mini-Comp', 'Queued'
+      WHERE NOT EXISTS (SELECT 1 FROM mini_comp_queue WHERE report_id = ?)
     `)
-    .bind(propertyId, report.id)
+    .bind(propertyId, report.id, report.id)
     .run();
 
     const propertyCode =
