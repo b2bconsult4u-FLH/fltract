@@ -6,6 +6,7 @@
   "compatibility_date": "2026-09-27",
   "workers_dev": true,
   "preview_urls": false,
+  "previews": {},
   "vars": {
     "ACCESS_ISSUER": "https://b2bconsult4u.cloudflareaccess.com",
     "ACCESS_AUDIENCE": "4312260f76753fb5e3464d1696f75069a27536a21048ae819ac63e79b46f198b"
