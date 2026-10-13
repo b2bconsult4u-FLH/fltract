@@ -115,3 +115,22 @@ test('explicit postal or city conflict is not treated as an exact subject match'
   await assert.rejects(researchProperty({...config,property_location:input},{fetcher:fetcher().run,now}),/No exact/);
  }
 });
+
+test('candidate review updates only its report, requires evidence and preserves approved reports',async()=>{
+ const start=source.indexOf('if(request.method === "POST" && /^\\/property\\/\\d+\\/mini-comp\\/comparable\\/\\d+\\/review$');
+ const end=source.indexOf('\n\nif (\nrequest.method === "POST"',start);
+ assert.ok(start>0&&end>start);
+ const handler=new Function('return async function(request,env,staff,ensureMiniCompForProperty,sameOriginPost,redirect){const url=new URL(request.url);'+source.slice(start,end)+'}')();
+ const DB=await database();try{
+  await processMiniCompQueue({DB},{fetcher:fetcher().run,now});
+  const make=(path,qualification='Yes',reason='Verified deed qualification and comparable characteristics.')=>new Request('https://example.invalid'+path,{method:'POST',headers:{Origin:'https://example.invalid'},body:new URLSearchParams({qualified_sale:qualification,selection_reason:reason})});
+  const call=req=>handler(req,{DB},{email:'synthetic@example.invalid'},async()=>DB.sqlite.prepare('SELECT * FROM mini_comp_reports WHERE id=1').get(),()=>true,path=>new Response(null,{status:303,headers:{Location:path}}));
+  assert.equal((await call(make('/property/1/mini-comp/comparable/1/review'))).status,303);
+  assert.equal(DB.sqlite.prepare('SELECT qualified_sale FROM mini_comp_comparables WHERE id=1').get().qualified_sale,'Yes');
+  assert.equal((await call(make('/property/1/mini-comp/comparable/2/review','Yes',''))).status,400);
+  assert.equal((await call(make('/property/1/mini-comp/comparable/999/review'))).status,404);
+  DB.sqlite.exec("UPDATE mini_comp_reports SET status='Approved'");
+  assert.equal((await call(make('/property/1/mini-comp/comparable/1/review','No'))).status,409);
+  assert.equal(DB.sqlite.prepare('SELECT qualified_sale FROM mini_comp_comparables WHERE id=1').get().qualified_sale,'Yes');
+ }finally{DB.sqlite.close();}
+});
