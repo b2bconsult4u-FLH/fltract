@@ -6772,6 +6772,7 @@ request.method === "POST" &&
   const propertyId = Number(parts[1]);
   const compId = Number(parts[4]);
   const report = await ensureMiniCompForProperty(env, propertyId);
+  if (report.status === "Approved") return new Response("Reopen the report before removing a comparable.", {status:409});
 
   await env.DB.prepare(`
     DELETE FROM mini_comp_comparables
@@ -7159,9 +7160,9 @@ ${report.status==='Approved'?'':`<form method="post" action="/property/${propert
 <label>Review evidence / selection reason<textarea name="selection_reason" required maxlength="2000">${esc(comp.selection_reason||'')}</textarea></label>
 <button type="submit" class="secondary">Save Candidate Review</button>
 </form>`}
-<form method="post" action="/property/${propertyId}/mini-comp/comparable/${comp.id}/delete" onsubmit="return confirm('Remove this comparable from the mini-comp?');">
+${report.status==='Approved'?'':`<form method="post" action="/property/${propertyId}/mini-comp/comparable/${comp.id}/delete" onsubmit="return confirm('Remove this comparable from the mini-comp?');">
 <button type="submit" class="secondary">Remove</button>
-</form>
+</form>`}
 </td>
 </tr>`;
       }).join("")
