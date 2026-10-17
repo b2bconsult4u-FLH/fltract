@@ -16,6 +16,7 @@ permissions:
   contents: read
 jobs:
   public-preflight:
+    name: Candidate public source preflight
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
@@ -25,5 +26,14 @@ jobs:
           node-version: '22'
       - name: Check candidate public pages and launch hold
         run: node scripts/public-release-preflight.mjs
+  production-preflight:
+    name: Current production HTTP preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - name: Check current production pages and internal file exclusions (read only)
         run: node scripts/public-release-preflight.mjs --live
