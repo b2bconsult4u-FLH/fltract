@@ -6,9 +6,30 @@ const routes = ['/', '/regions/', '/brevard/', '/indian-river/', '/st-lucie/', '
 const live = process.argv.includes('--live');
 assert.ok(process.argv.slice(2).every(arg => arg === '--live'), 'Only --live is supported; the production target is fixed.');
 const base = 'https://fltract.com';
+async function request(path) {
+  const url = base + path;
+  try {
+    const response = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(20000) });
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location');
+      await response.body?.cancel();
+      throw new Error('HTTP ' + response.status + ' redirect to ' + location);
+    }
+    return response;
+  } catch (error) {
+    const causes = [];
+    for (let cause = error; cause; cause = cause.cause) {
+      causes.push([cause.name, cause.code, cause.message].filter(Boolean).join(': '));
+      if (cause instanceof AggregateError) {
+        causes.push(...cause.errors.map(item => [item.code, item.message].filter(Boolean).join(': ')));
+      }
+    }
+    throw new Error(url + ': ' + causes.join(' <- '), { cause: error });
+  }
+}
 async function read(path) {
   if (!live) return readFile(new URL('..' + (path.endsWith('/') ? path + 'index.html' : path), import.meta.url), 'utf8');
-  const response = await fetch(base + path, { redirect: 'error', signal: AbortSignal.timeout(20000) });
+  const response = await request(path);
   assert.equal(response.status, 200, path + ': HTTP ' + response.status);
   return response.text();
 }
@@ -48,7 +69,7 @@ for (const [path, pattern] of [
 if (live) {
   for (const path of ['/package.json', '/wrangler.jsonc', '/workers/intake/worker.mjs', '/workers/admin/worker.mjs', '/.git/config']) {
     await check(path, async () => {
-    const response = await fetch(base + path, { redirect: 'manual', signal: AbortSignal.timeout(20000) });
+    const response = await request(path);
     assert.equal(response.status, 404, path + ': internal path must be unavailable (404), got ' + response.status);
     await response.body?.cancel();
     console.log('PASS internal file unavailable: ' + path);
@@ -57,6 +78,6 @@ if (live) {
 }
 const summary = (live ? 'Production read-only HTTP' : 'Candidate source') + ' checks passed: ' + checked + '; failed: ' + failures.length + '. Public submissions remain disabled. This does not certify visual layout or signed-in CRM behavior.';
 console.log(summary);
-if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY, summary + '\n');
+if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY, summary + '\n' + failures.map(message => '- ' + message).join('\n') + '\n');
 
 if (failures.length) throw new AggregateError(failures.map(message => new Error(message)), 'Release preflight failed');
