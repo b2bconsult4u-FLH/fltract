@@ -10,9 +10,11 @@ Built from main 628403046b77b3928cba1d25e177fe87008d0d49. This narrowly ports th
 - Present server validation messages as plain text while retaining entries after failure.
 - Keep PUBLIC_SUBMISSIONS_ENABLED=false. Preserve current production DB ID and bindings; do not restore PR #7's placeholder or older optional-module configuration.
 
+- Add root static-site Wrangler configuration with the required previews block, preserving the deployed site compatibility date and observability. A deny-by-default .assetsignore publishes exactly the 14 existing public assets; Worker code, tests, dependency files, git data and internal documentation are excluded.
+
 ## Validation
 
-120 tests pass through npm test (108 existing plus 12 regression tests). Includes real in-memory SQLite linkage/recovery/security tests and isolated browser-script tests. External email is stubbed; fixture addresses use example.invalid. Node syntax and git diff checks pass. Wrangler 4.149.0 deployment dry run bundles the intake successfully with DB and unrestricted SEND_EMAIL bindings. These checks do not certify live delivery.
+120 tests pass through npm test (108 existing plus 12 regression tests). Includes real in-memory SQLite linkage/recovery/security tests and isolated browser-script tests. External email is stubbed; fixture addresses use example.invalid. Node syntax and git diff checks pass. Wrangler 4.149.0 deployment dry run bundles the intake successfully with DB and unrestricted SEND_EMAIL bindings. GitHub Actions also passed. Static-site dry run passes, and Wrangler debug output confirms exactly 14 public files survive asset filtering. Local Wrangler server could not start because this container denies network-interface enumeration (uv_interface_addresses); no local HTTP smoke result is claimed. These checks do not certify live delivery.
 
 ## Verified deployment state before repair
 
