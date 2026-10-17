@@ -59,7 +59,7 @@ export const PRIVATE_ROUTES = [
   ['GET', /^\/property\/(\d+)$/, 'view_clients', 'property'],
   ['POST', /^\/property\/(\d+)\/update$/, 'edit_clients', 'property'],
   ['POST', /^\/property\/(\d+)\/(?:assign|assignment\/\d+\/end)$/, 'manage_assignments', 'property'],
-  ['POST', /^\/property\/(\d+)\/(?:official-research|mini-comp\/(?:save|comparable|comparable\/\d+\/delete))$/, 'research_property', 'property'],
+  ['POST', /^\/property\/(\d+)\/(?:official-research|mini-comp\/(?:save|comparable|comparable\/\d+\/(?:delete|review)))$/, 'research_property', 'property'],
   ['POST', /^\/property\/(\d+)\/mini-comp\/approve$/, 'approve_reports', 'property'],
   ['GET', /^\/property\/(\d+)\/(?:mini-comp(?:\/report)?|library)$/, 'review_reports', 'property'],
   ['GET', /^\/library\/item\/(\d+)$/, 'review_reports', 'library-item'],
