@@ -1,6 +1,6 @@
 # Intake validation repair — October 17, 2026
 
-Built from main 628403046b77b3928cba1d25e177fe87008d0d49. This narrowly ports the still-needed protections from draft PR #7 onto the current intake implementation. It preserves current inquiry options, combined required acknowledgment UI, consent version, structured metadata fields, client/property linking and manager recovery. No production deployment, data write or real email was performed.
+Built from main 628403046b77b3928cba1d25e177fe87008d0d49. This narrowly ports the still-needed protections from draft PR #7 onto the current intake implementation. It preserves current inquiry options, combined required acknowledgment UI, consent version, structured metadata fields, client/property linking and manager recovery. No production deployment or production data write was performed. Later sections document isolated preview test writes and the controlled email test.
 
 ## Changes
 
@@ -57,3 +57,22 @@ Actual acknowledgment receipt verified through connected B2B Gmail: message 1a14
 The internal office notice is provider-accepted, but direct office inbox receipt is not yet verified because that mailbox is not connected. Cloudflare emailSendingAdaptive currently returns no delivery events for the test window, so no delivered event is claimed. Desktop/mobile signed-in acceptance remains blocked as previously documented. Production Worker versions, production data and public submission disablement are unchanged.
 
 The live-email workflow runs only when this branch receives a change to its dedicated script with the exact explicit one-time commit message. Unrelated pushes do not send live test email. Foundation CI also passed on 57bd84b.
+
+## Delivery confirmation and public release preflight — October 17
+
+Cloudflare emailSendingAdaptive subsequently confirmed both exact test Message-IDs with status delivered and no error: office notice <Hou11c8hTGQezXVyZqPvHRXriWajNNWbnywU@fltract.com> to fltractoffice@gmail.com at 2026-10-17T11:30:58Z; acknowledgment <gDu2LDR1NkdoTn06cAJ39kbVDyZkBVVT5Vsb@fltract.com> to b2bconsult4u@gmail.com at 11:30:55Z. This supersedes the earlier empty analytics result. Delivered means the recipient server accepted the message; office Inbox/Spam placement remains unobserved. Office Gmail access is not required for intake or sending to operate.
+
+Added scripts/public-release-preflight.mjs and a read-only GitHub workflow. Candidate checks cover all ten pages for the exact brokerage name/license and associate license in the footer, canonical links, shared stylesheet, four public assets, fixed intake destination and PUBLIC_SUBMISSIONS_ENABLED=false. Live mode checks the fixed production host plus five internal file paths that must return 404. It collects all failures, makes no submissions and uses no mail or D1 binding. These are content/HTTP gates, not visual or legal certification.
+
+The latest static candidate f68bd604-fltract.b2bconsult4u.workers.dev/contact/ redirects this browser to FLTract Preview Review Access. Prior Google sign-in returned a generic error; no repeated login or policy relaxation was attempted. Authenticated desktop/mobile CRM and candidate-review acceptance remains open.
+
+### Promotion sequence and rollback
+
+1. Require successful candidate source tests, isolated D1 runtime/link/consent evidence and controlled email delivery (recorded above). Inspect public preflight results separately: production may differ from the candidate.
+2. Complete authenticated preview visual acceptance: inquiry/dashboard, candidate Yes/No/Unknown evidence controls, qualified-sale approval gate, approved-report refusal, and desktop/mobile public form/error/confirmation/second-property rendering.
+3. Immediately before promotion, re-read production deployments and bindings. Preserve the active production version IDs as rollback targets. Previously observed intake version daf0ab5f-c647-4aa5-a3a6-44077c11cff2 must not be assumed current without that read.
+4. Build the reviewed commit with production configs. Production D1 must be f2ca6407-6d2d-4c7d-b7d2-5f6e8d96a274. Never promote test versions 2c07ff7d or e54a0265: they bind preview D1. Preserve production Access issuer/audience, routes, email binding and hourly deadlines. Do not add optional schema modules.
+5. Promote only the verified artifacts, keeping public submissions disabled initially. Repeat health, anonymous/spoofed-access denials, authorized CRM smoke and public HTTP preflight. Restore recorded prior production versions if any acceptance fails.
+6. Enable public submissions only after these checks pass, then verify the public form once with controlled data and check persisted inquiry/consent/linkage plus mail status. Retain rollback versions and record the launch evidence.
+
+No production promotion or launch is claimed by this milestone.
