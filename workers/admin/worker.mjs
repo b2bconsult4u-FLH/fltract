@@ -6739,6 +6739,29 @@ request.method === "POST" &&
 }
 
 
+if(request.method === "POST" && /^\/property\/\d+\/mini-comp\/comparable\/\d+\/review$/.test(url.pathname)) {
+  if(!sameOriginPost(request))return new Response("Invalid request origin.",{status:403});
+  const parts=url.pathname.split("/").filter(Boolean);
+  const propertyId=Number(parts[1]),compId=Number(parts[4]);
+  const report=await ensureMiniCompForProperty(env,propertyId);
+  if(report.status==='Approved')return new Response("Reopen the report as a draft before changing reviewed candidates.",{status:409});
+  const comp=await env.DB.prepare("SELECT id FROM mini_comp_comparables WHERE id=? AND report_id=?").bind(compId,report.id).first();
+  if(!comp)return new Response("Comparable not found in this report.",{status:404});
+  const form=await request.formData();
+  const qualification=String(form.get('qualified_sale')||'');
+  const reason=String(form.get('selection_reason')||'').trim().slice(0,2000);
+  if(!['Yes','No','Unknown'].includes(qualification)||!reason)return new Response("Choose a qualification and record the review evidence/reason.",{status:400});
+  const reviewWrites=await env.DB.batch([
+    env.DB.prepare("UPDATE mini_comp_comparables SET qualified_sale=?,selection_reason=? WHERE id=? AND report_id=? AND EXISTS (SELECT 1 FROM mini_comp_reports r WHERE r.id=mini_comp_comparables.report_id AND r.status <> 'Approved')").bind(qualification,reason,compId,report.id),
+    env.DB.prepare("UPDATE mini_comp_reports SET updated_at=CURRENT_TIMESTAMP WHERE id=? AND status <> 'Approved'").bind(report.id),
+    env.DB.prepare("INSERT INTO activity_log(inquiry_id,activity_type,activity_note) SELECT primary_inquiry_id,'Mini-Comp Candidate Reviewed',? FROM properties WHERE id=? AND primary_inquiry_id IS NOT NULL AND EXISTS (SELECT 1 FROM mini_comp_reports r WHERE r.property_id=properties.id AND r.status <> 'Approved')").bind(`Candidate ${compId} reviewed by ${staff.email}: qualification ${qualification}. ${reason}`,propertyId)
+  ]);
+  // D1 batch is transactional: recheck approval at mutation time as well as read time.
+  if(reviewWrites[0]?.meta?.changes!==1)return new Response("Candidate or report changed during review. Reload before retrying.",{status:409});
+  return redirect(`/property/${propertyId}/mini-comp`);
+}
+
+
 if (
 request.method === "POST" &&
 /^\/property\/\d+\/mini-comp\/comparable\/\d+\/delete$/.test(url.pathname)
@@ -6751,6 +6774,7 @@ request.method === "POST" &&
   const propertyId = Number(parts[1]);
   const compId = Number(parts[4]);
   const report = await ensureMiniCompForProperty(env, propertyId);
+  if (report.status === "Approved") return new Response("Reopen the report before removing a comparable.", {status:409});
 
   await env.DB.prepare(`
     DELETE FROM mini_comp_comparables
@@ -7133,9 +7157,14 @@ request.method === "GET" &&
 </td>
 <td>${esc(comp.selection_reason || "")}</td>
 <td>
-<form method="post" action="/property/${propertyId}/mini-comp/comparable/${comp.id}/delete" onsubmit="return confirm('Remove this comparable from the mini-comp?');">
+${report.status==='Approved'?'':`<form method="post" action="/property/${propertyId}/mini-comp/comparable/${comp.id}/review">
+<label>Qualified sale<select name="qualified_sale">${['Unknown','Yes','No'].map(value=>`<option${comp.qualified_sale===value?' selected':''}>${value}</option>`).join('')}</select></label>
+<label>Review evidence / selection reason<textarea name="selection_reason" required maxlength="2000">${esc(comp.selection_reason||'')}</textarea></label>
+<button type="submit" class="secondary">Save Candidate Review</button>
+</form>`}
+${report.status==='Approved'?'':`<form method="post" action="/property/${propertyId}/mini-comp/comparable/${comp.id}/delete" onsubmit="return confirm('Remove this comparable from the mini-comp?');">
 <button type="submit" class="secondary">Remove</button>
-</form>
+</form>`}
 </td>
 </tr>`;
       }).join("")

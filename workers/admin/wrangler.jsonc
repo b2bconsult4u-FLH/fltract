@@ -6,6 +6,27 @@
   "compatibility_date": "2026-09-27",
   "workers_dev": true,
   "preview_urls": false,
+  "previews": {
+    "vars": {
+      "ACCESS_ISSUER": "https://b2bconsult4u.cloudflareaccess.com",
+      "ACCESS_AUDIENCE": "28ac8d421065c44934ea67d4e8050634abf660b550725c5a39f9f74497fa5c04"
+    },
+    "d1_databases": [
+      {
+        "binding": "DB",
+        "database_name": "fltract-preview",
+        "database_id": "d1398b4b-b196-42f6-a862-6b70177e8bb1"
+      }
+    ],
+    "send_email": [
+      {
+        "name": "SEND_EMAIL",
+        "allowed_destination_addresses": [
+          "fltractoffice@gmail.com"
+        ]
+      }
+    ]
+  },
   "vars": {
     "ACCESS_ISSUER": "https://b2bconsult4u.cloudflareaccess.com",
     "ACCESS_AUDIENCE": "4312260f76753fb5e3464d1696f75069a27536a21048ae819ac63e79b46f198b"
