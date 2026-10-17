@@ -44,3 +44,16 @@ Integrated the candidate qualification work from PR #23 (cd9e483acb032375679e389
 Expanded isolated acceptance covers incorrect Origin, invalid qualification, missing evidence, candidate/report mismatch, reviewer attribution, preservation of source/date/price/parcel fields, approved-report refusal, and authenticated Employee/Manager scope denial. Found and fixed an approval race: report approval between the initial read and form parsing previously permitted a review write. The transactional candidate update now rechecks the report state and returns 409 without a completed-review activity entry if approval won the race.
 
 Full combined suite: 122/122 passing locally. Admin Worker syntax and deployment dry run pass. This completes implementation/integration acceptance for candidate qualification; it is not live UI acceptance, promotion, or whole-project completion. Browser access and controlled live email receipt remain the release gates already listed above.
+
+
+## Controlled live email acceptance — October 17, 07:30 Eastern
+
+Uploaded intake test version e54a0265-712b-4890-9657-d11ae9ad826c, built from the same repaired intake bundle as 13444f0. It binds only to fltract-preview D1 and restricts SEND_EMAIL to b2bconsult4u@gmail.com and fltractoffice@gmail.com. No production traffic was assigned. Do not promote this test version with preview bindings.
+
+One-time GitHub push workflow run 39028978657 passed. Synthetic preview inquiry #2 (SYNTHETIC-EMAIL-PR24-39028978657-1) saved with complete client/property processing. Both acknowledgment and internal office notification were Sent with provider message IDs and no failure reason.
+
+Actual acknowledgment receipt verified through connected B2B Gmail: message 1a149a11aa972509, dated 2026-10-17T11:30:55Z; Gmail received it at 11:30:57Z. Its Message-ID exactly matches preview email_log. Gmail Authentication-Results reports SPF, DKIM and DMARC pass. This establishes real receipt, not merely API acceptance.
+
+The internal office notice is provider-accepted, but direct office inbox receipt is not yet verified because that mailbox is not connected. Cloudflare emailSendingAdaptive currently returns no delivery events for the test window, so no delivered event is claimed. Desktop/mobile signed-in acceptance remains blocked as previously documented. Production Worker versions, production data and public submission disablement are unchanged.
+
+The live-email workflow runs only when this branch receives a change to its dedicated script with the exact explicit one-time commit message. Unrelated pushes do not send live test email. Foundation CI also passed on 57bd84b.
