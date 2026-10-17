@@ -28,3 +28,11 @@ PR #7 remains an old draft against feature/business-access-control-2026-10-03. I
 2. Before promotion, capture active deployment/configuration and rollback version. Verify the candidate artifact and schema without enabling unrelated modules.
 3. Perform one explicitly approved live intake/email test at a controlled address. Verify CRM inquiry, consent history, metadata, downstream linkage/recovery, acknowledgment receipt and internal notification.
 4. Enable public submissions only after those gates pass; check live validation, error retention, confirmation and second-property flow.
+
+## Production-schema compatibility acceptance — October 17, 05:56–06:00 Eastern
+
+Re-read the five core production table definitions through a read-only sqlite_master query (zero rows written). Saved schema-only DDL as modules/property-records/tests/fixtures/intake-production-core-2026-10-17.sql. The SQLite integration test now uses this independent fixture rather than constructing a matching table from the Worker's INSERT columns. Production defaults, NOT NULL constraints and foreign keys therefore participate in acceptance.
+
+The expanded integration test verifies all four current form inquiry options; dedicated timeframe/ownership/contact/source fields; unmodified details; required consent snapshots and separate live-call/marketing selections; client continuity; distinct property/mini-comp artifacts; logged customer/internal mail status; preservation of saved inquiry/consent on injected mail-provider failure; and no email after a real SQLite trigger rejects the core insert. Foreign-key checks pass. All test writes occur in an in-memory database, and email sending is stubbed.
+
+This completes isolated core schema/intake compatibility acceptance. It does not verify D1 runtime behavior, live delivery, signed-in CRM rendering, or browser layout. The protected preview browser sign-in failed with “Unable to sign in” after Google account selection; the public contact URL returned a 502 in that browser. Those visual checks remain blocked, and public submissions remain disabled.
