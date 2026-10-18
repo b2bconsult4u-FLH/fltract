@@ -162,7 +162,9 @@ test('private lists render only scoped synthetic data using real SQLite',async()
  `);
  try{
   for(const [path,visible,hidden] of [['/','VisibleInquiry','HiddenInquiry'],['/clients','VisibleClient','HiddenClient'],['/followups','VisibleFollowup','HiddenFollowup'],['/work-routing','VisibleTask','HiddenTask']]){
-   const r=await worker.fetch(request(path),{...envConfig,DB});assert.equal(r.status,200,path);const html=await r.text();assert.ok(html.includes(visible),path+' visible row');assert.ok(!html.includes(hidden),path+' hidden row');
+   const r=await worker.fetch(request(path),{...envConfig,DB});assert.equal(r.status,200,path);
+   assert.equal(r.headers.get('referrer-policy'),'same-origin',path+' must support same-origin forms without disclosing external referrers');
+   const html=await r.text();assert.ok(html.includes(visible),path+' visible row');assert.ok(!html.includes(hidden),path+' hidden row');
   }
  }finally{sqlite.close();}
 });

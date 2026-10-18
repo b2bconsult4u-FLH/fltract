@@ -69,14 +69,15 @@ test('Group 2 warning advances to overdue, redirects to manager, and audits each
   const DB=await database();
   try {
     staff(DB);
-    DB.sqlite.exec("INSERT INTO flt_work_items(id,work_type,status,assigned_staff_user_id,assigned_staff_email,due_at,warning_at) VALUES(1,'Synthetic Deadline','Assigned',1,'worker@example.invalid',datetime('now','+1 day'),datetime('now','-1 day'))");
+    // SQLite's bare datetime has no zone; use explicit UTC in every fixture.
+    DB.sqlite.exec("INSERT INTO flt_work_items(id,work_type,status,assigned_staff_user_id,assigned_staff_email,due_at,warning_at) VALUES(1,'Synthetic Deadline','Assigned',1,'worker@example.invalid',strftime('%Y-%m-%dT%H:%M:%fZ','now','+1 day'),strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 day'))");
     assert.deepEqual(await functions.checkWorkDeadlines({DB},'Synthetic Clock'),{checked:1,warned:1,overdue:0,escalated:1});
     let work=DB.sqlite.prepare('SELECT * FROM flt_work_items').get();
     assert.equal(work.status,'Deadline Warning'); assert.equal(work.escalation_level,1);
     assert.equal(work.assigned_staff_email,'manager@example.invalid');
     await functions.checkWorkDeadlines({DB});
     assert.equal(DB.sqlite.prepare('SELECT COUNT(*) n FROM flt_work_routing_events').get().n,1);
-    DB.sqlite.exec("UPDATE flt_work_items SET due_at=datetime('now','-1 hour')");
+    DB.sqlite.exec("UPDATE flt_work_items SET due_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 hour')");
     assert.deepEqual(await functions.checkWorkDeadlines({DB},'Synthetic Clock'),{checked:1,warned:0,overdue:1,escalated:1});
     work=DB.sqlite.prepare('SELECT * FROM flt_work_items').get();
     assert.equal(work.status,'Overdue'); assert.equal(work.escalation_level,2);
@@ -95,7 +96,7 @@ test('Group 2 deadline state and audit roll back together on storage failure',as
   const DB=await database();
   try {
     staff(DB);
-    DB.sqlite.exec("INSERT INTO flt_work_items(id,work_type,status,due_at) VALUES(1,'Synthetic Failure','Assigned',datetime('now','-1 day')); CREATE TRIGGER reject_deadline BEFORE UPDATE ON flt_work_items BEGIN SELECT RAISE(ABORT,'Synthetic storage failure'); END");
+    DB.sqlite.exec("INSERT INTO flt_work_items(id,work_type,status,due_at) VALUES(1,'Synthetic Failure','Assigned',strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 day')); CREATE TRIGGER reject_deadline BEFORE UPDATE ON flt_work_items BEGIN SELECT RAISE(ABORT,'Synthetic storage failure'); END");
     await assert.rejects(functions.checkWorkDeadlines({DB}),/Synthetic storage failure/);
     assert.equal(DB.sqlite.prepare('SELECT status FROM flt_work_items').get().status,'Assigned');
     assert.equal(DB.sqlite.prepare('SELECT COUNT(*) n FROM flt_work_routing_events').get().n,0);

@@ -7228,6 +7228,7 @@ These figures are descriptive calculations from the recorded comparable sales. T
 <p class="section-note">
 Use public or otherwise authorized source data. Record the source reference and why the sale is comparable. Mark a sale Qualified only after its transaction and property characteristics have been checked. The working target is 10 researched candidates, with the strongest 3–5 selected for the final mini-comp.
 </p>
+<div class="work-queue-wrap" role="region" aria-label="Comparable sales table" tabindex="0">
 <table>
 <thead>
 <tr>
@@ -7236,6 +7237,7 @@ Use public or otherwise authorized source data. Record the source reference and 
 </thead>
 <tbody>${compRows}</tbody>
 </table>
+</div>
 </div>
 
 <div class="panel">
@@ -10039,6 +10041,11 @@ async fetch(request, env, ctx) {
     await securityAudit(env,staff,request,"Attempt","Authorized private request",correlationId);
     await ensureClientSchema(env);
     const response = await adminFetch(request,env,staff,ctx);
+    // Keep same-origin forms usable: no-referrer can serialize POST Origin as
+    // "null". Suppress cross-origin referrers without relaxing write checks.
+    if (response.headers.get("content-type")?.startsWith("text/html")) {
+      response.headers.set("referrer-policy", "same-origin");
+    }
     try {
       await securityAudit(env,staff,request,response.status<400?"Completed":"Rejected",`HTTP ${response.status}`,correlationId);
     } catch {
