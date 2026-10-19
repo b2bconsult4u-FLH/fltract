@@ -56,7 +56,7 @@ test('failed core save sends no email',async()=>{const f=await submit(payload,{s
 test('preflight and denied origins perform no database writes',async()=>{
   for(const [origin,status] of [['https://fltract.com',204],['https://www.fltract.com',204],['https://evil.example',403]]) {const f=fixture();const r=await worker.fetch(new Request('https://intake.example/submit',{method:'OPTIONS',headers:{Origin:origin,'Access-Control-Request-Method':'POST','Access-Control-Request-Headers':'content-type'}}),f.env);assert.equal(r.status,status);assert.equal(f.writes.length,0);}
 });
-test('public form remains disabled and inline script parses',()=>{const html=readFileSync(new URL('../../../contact/index.html',import.meta.url),'utf8');assert.match(html,/const PUBLIC_SUBMISSIONS_ENABLED=false;/);new vm.Script(html.match(/<script>([\s\S]*?)<\/script>/)[1]);});
+test('owner-approved live form is enabled and inline script parses',()=>{const html=readFileSync(new URL('../../../contact/index.html',import.meta.url),'utf8');assert.match(html,/const PUBLIC_SUBMISSIONS_ENABLED=true;/);new vm.Script(html.match(/<script>([\s\S]*?)<\/script>/)[1]);});
 
 function browserFixture({phone='',preferred='Email',liveCall=false,responseErrors=[]}={}) {
   const handlers={};
@@ -68,8 +68,8 @@ function browserFixture({phone='',preferred='Email',liveCall=false,responseError
   const ids={'fltract-intake':form,'form-status':status,'source_page':elements.source_page};
   const document={getElementById(id){return ids[id]||(ids[id]=element());},addEventListener(){}};
   const html=readFileSync(new URL('../../../contact/index.html',import.meta.url),'utf8');
-  // Open only this isolated VM fixture; repository and public form remain disabled.
-  const script=html.match(/<script>([\s\S]*?)<\/script>/)[1].replace('const PUBLIC_SUBMISSIONS_ENABLED=false;','const PUBLIC_SUBMISSIONS_ENABLED=true;');
+  // Exercise the real enabled form in an isolated VM with no live HTTP or mail.
+  const script=html.match(/<script>([\s\S]*?)<\/script>/)[1];
   vm.runInNewContext(script,{document,window:{location:{href:'https://fltract.com/contact/'}},setTimeout(){},FormData:class {entries(){return Object.entries(payload);}get(name){return name==='required_acknowledgments'?'yes':'';}},async fetch(){fetches++;return {ok:false,async json(){return {ok:false,errors:responseErrors};}};}});
   return {status,button,elements,submit:()=>handlers.submit({preventDefault(){}}),get fetches(){return fetches;},get resets(){return resets;}};
 }
