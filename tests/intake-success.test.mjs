@@ -6,7 +6,7 @@ const page = readFileSync(new URL('../contact/index.html', import.meta.url), 'ut
 const worker = readFileSync(new URL('../workers/intake/worker.mjs', import.meta.url), 'utf8');
 
 test('intake shows a durable thank-you view, not an automatically reset form', () => {
-  const success = page.slice(page.indexOf('const ref=result.inquiry_id'), page.indexOf('}catch(err)'));
+  const success = page.slice(page.indexOf('const emailState='), page.indexOf('}catch(err)'));
   assert.match(success, /form\.hidden=true/);
   assert.match(success, /successModal\.hidden=false/);
   assert.doesNotMatch(success, /form\.reset\(\)/);
@@ -22,10 +22,10 @@ test('only explicit second-inquiry action resets form and returns to intake', ()
   assert.match(section, /form\.reset\(\)/);
 });
 
-test('receipt ID and email dispatch results originate from server response', () => {
+test('internal receipt ID stays server-side and email status comes from server response', () => {
   assert.match(worker, /inquiry_id:\s*inquiryId/);
   assert.match(worker, /acknowledgment_email:\s*acknowledgmentEmailStatus/);
-  assert.match(page, /result\.inquiry_id/);
+  assert.doesNotMatch(page, /success-reference|Please retain your reference number|Inquiry reference:/);
   assert.match(page, /result\.acknowledgment_email/);
   assert.match(page, /could not confirm delivery/);
 });
