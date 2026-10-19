@@ -1,3 +1,4 @@
+import { createInvitation, handleQuestionnaire } from './questionnaire.mjs';
 import { countiesForCity } from '../../assets/js/florida-places.js';
 import { afterInquirySaved } from '../../modules/property-records/intake-hook.mjs';
 const CONSENT_VERSION = "FLTRACT-CONSENT-2026-09-27-V1";
@@ -1076,6 +1077,8 @@ export default {
 
 
 
+
+    if (url.pathname === "/questionnaire") return handleQuestionnaire(request, env);
 
     if (!env.DB) {
 
@@ -3312,6 +3315,13 @@ export default {
 *       Email failure must never cause the intake itself to fail.
 *       -------------------------------------------------------- */
 
+    // Secondary questionnaire issuance must never undo an already persisted intake.
+    let questionnaireUrl = null;
+    try {
+      questionnaireUrl = await createInvitation(env.DB, inquiryId, inquiryType, new URL(request.url).origin);
+    } catch (error) {
+      console.error("Questionnaire invitation preparation failed:", error?.message || "unknown error");
+    }
     let acknowledgmentEmailStatus = "not_attempted";
     let emailLogId = null;
 
@@ -3362,12 +3372,14 @@ We appreciate your contacting FLTract and look forward to serving you.`;
         <p>We appreciate your contacting FLTract and look forward to serving you.</p>
       `;
 
+      const questionnaireNote = questionnaireUrl ? "\\n\\nTo tell us more about your needs, complete your secure FLTract questionnaire: " + questionnaireUrl : "";
+      const questionnaireHtml = questionnaireUrl ? '<p>To help us prepare a qualified referral, <a href="' + questionnaireUrl + '">complete your secure questionnaire</a>. This optional link expires in seven days.</p>' : '';
       const sendResult = await env.SEND_EMAIL.send({
         to: email,
         from: "noreply@fltract.com",
         subject: "FLTract Inquiry Receipt",
-        text: emailText,
-        html: emailHtml
+        text: emailText + questionnaireNote,
+        html: emailHtml + questionnaireHtml
       });
 
       acknowledgmentEmailStatus = "sent";
