@@ -37,3 +37,11 @@ This supersedes the incomplete admin-login status above. After both Google and d
 Fresh navigation to the exact production admin hostname successfully rendered the dashboard using the existing owner email-code session. Security & Audit also rendered and recorded the owner as Administrator, with a completed dashboard visit. No new code request was necessary. No customer or historical-test record was edited. Screenshot: production-admin-2026-10-19.jpg. The signed-in production-admin smoke blocker is resolved; public form submission enablement is still outstanding.
 
 Authentication rollback: detach only policy 7bc0b8b0-f521-4890-8b82-8152127e774c from production admin and remove only the email-code provider from its allowed_idps, preserving the original policy/provider and all other settings. Do not delete the account-level provider. The policy persists until explicitly removed; six hours is the session limit, not automatic expiry.
+
+## Live form enabled for owner test — 14:29 UTC
+
+Owner explicitly requested enabling the form. PR #25 merged at a2b4189ee5fe4eef27f9b67d8a54313ad56798c8; static Worker version 1f165a09-1035-411a-bc97-684338f8994f deployed at 100%. This supersedes the earlier public-form hold statements. The site remains behind the same exact-email Access policy; it has not opened to the public.
+
+Candidate checks passed all 14 content checks and all 130 tests. GitHub Foundation run 39269163815 and preflight run 39269163839 passed. Source preflight now requires explicit --intake-enabled for enabled state. The temporary workflow uses --live --expect-access, requiring anonymous HTTP 302 to the exact account Access login origin for all 19 paths; it does not substitute for protected-content or origin-404 inspection. Default public-content checks remain available when the Access restriction is removed.
+
+Fresh authenticated /contact/ loaded the enabled source. An empty submit now displayed Please complete the fields marked in red rather than the former launch-hold message. No production inquiry or email was generated. Exact-email Access policy was re-read after deployment. Screenshot: form-enabled-2026-10-19.jpg. Owner's completed live inquiry and receipt verification are the next step.
