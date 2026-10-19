@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test modules/property-records/tests/*.test.mjs workers/admin/tests/*.test.mjs"
+    "test": "node --test modules/property-records/tests/*.test.mjs workers/admin/tests/*.test.mjs tests/*.test.mjs"
   },
   "dependencies": {
     "jose": "6.2.12"
