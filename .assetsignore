@@ -11,6 +11,8 @@
 /assets/js/*
 !/assets/css/site.css
 !/assets/js/property-records.js
+!/assets/js/florida-places.js
+!/assets/js/location-fields.js
 !/brevard/
 /brevard/*
 !/brevard/index.html

@@ -79,3 +79,18 @@ test('browser stops malformed optional phone and unauthorized call before fetch'
 test('browser preserves entries and shows server validation errors as plain text',async()=>{
   const f=browserFixture({responseErrors:['Select a valid county.','<b>untrusted</b>']});await f.submit();assert.equal(f.fetches,1);assert.equal(f.resets,0);assert.equal(f.button.disabled,false);assert.match(f.status.textContent,/Select a valid county\. <b>untrusted<\/b>/);assert.match(f.status.textContent,/entries have not been cleared/);
 });
+
+test('city-only intake resolves county and saves the supplied location context', async()=>{
+  const f=await submit({...payload,city:'Vero Beach',county:'Not Sure'});
+  assert.equal(f.body.ok,true);
+  const saved=f.writes.find(w=>w.sql.includes('INSERT INTO inquiries'));
+  assert.ok(saved.args.includes('Indian River'));
+  assert.ok(saved.args.some(a=>typeof a==='string'&&a.includes('City or nearby city: Vero Beach')&&a.includes('County supplied: Not Sure')));
+});
+test('intake preserves an explicit county and leaves multi-county city unresolved', async()=>{
+  for(const [city,county] of [['Vero Beach','Brevard'],['Fanning Springs','Not Sure']]){
+    const f=await submit({...payload,city,county});
+    assert.equal(f.body.ok,true);
+    assert.ok(f.writes.find(w=>w.sql.includes('INSERT INTO inquiries')).args.includes(county));
+  }
+});
