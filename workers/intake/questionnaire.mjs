@@ -44,5 +44,14 @@ export async function handleQuestionnaire(request,env){
  if(intent==="complete"&&data.get("sharing")!=="yes")return json({ok:false,error:"Authorization is required to complete the questionnaire"},400);
  if(data.get("sharing")==="yes")answers.sharing="yes";
  await env.DB.prepare("UPDATE intake_questionnaires SET answers_json=?,status=?,consent_version=?,completed_at=CASE WHEN ?='Completed' THEN CURRENT_TIMESTAMP ELSE NULL END,updated_at=CURRENT_TIMESTAMP WHERE inquiry_id=? AND token_hash=? AND status<>'Completed'").bind(JSON.stringify(answers),intent==="complete"?"Completed":"Partially Completed","FLTRACT-QUESTIONNAIRE-2026-10-19-V1",intent==="complete"?"Completed":"Partially Completed",record.inquiry_id,hash).run();
+ if(intent==="complete" && env.SEND_EMAIL){
+   try {
+     await env.SEND_EMAIL.send({
+       to:"fltractoffice@gmail.com",from:"noreply@fltract.com",subject:"FLTract Client Questionnaire Completed",
+       text:"A qualification questionnaire has been completed. Sign in to FLTract to review inquiry #"+record.inquiry_id+".",
+       html:"<p>A qualification questionnaire has been completed. Sign in to FLTract to review inquiry #"+record.inquiry_id+".</p>"
+     });
+   } catch(error){console.error("Questionnaire completion notification failed",String(error?.message||error));}
+ }
  return page({...record,answers_json:JSON.stringify(answers),status:intent==="complete"?"Completed":"Partially Completed"},token);
 }
