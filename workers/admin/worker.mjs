@@ -6676,7 +6676,8 @@ request.method === "POST" &&
     return new Response("Source name and source reference are required.", {status:400});
   }
 
-  await env.DB.prepare(`
+  if (report.status === 'Approved') return new Response('Approved reports cannot accept new comparables.', {status:409});
+  const comparableWrites = await env.DB.batch([env.DB.prepare(`
     INSERT INTO mini_comp_comparables (
       report_id,
       property_location,
@@ -6694,7 +6695,8 @@ request.method === "POST" &&
       selection_reason,
       notes
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?
+    WHERE EXISTS (SELECT 1 FROM mini_comp_reports WHERE id = ? AND status <> 'Approved')
   `).bind(
     report.id,
     field("property_location", 1000),
@@ -6709,19 +6711,17 @@ request.method === "POST" &&
     sourceName,
     sourceReference,
     field("selection_reason", 2000),
-    field("notes", 4000)
-  ).run();
-
-  await env.DB.prepare(`
+    field("notes", 4000),
+    report.id
+  ), env.DB.prepare(`
     UPDATE mini_comp_reports
-    SET status = CASE
-      WHEN status = 'Approved' THEN 'Ready for Review'
-      ELSE 'Draft'
-    END,
+    SET status = 'Draft',
     approved_at = NULL,
     updated_at = CURRENT_TIMESTAMP
-    WHERE id = ?
-  `).bind(report.id).run();
+    WHERE id = ? AND status <> 'Approved' AND changes() = 1
+  `).bind(report.id)]);
+
+  if (comparableWrites[0]?.meta?.changes !== 1) return new Response('Report changed during editing. Reload before retrying.', {status:409});
 
   await syncMiniCompLibraryStatus(env, propertyId, report.id);
 
@@ -6776,16 +6776,17 @@ request.method === "POST" &&
   const report = await ensureMiniCompForProperty(env, propertyId);
   if (report.status === "Approved") return new Response("Reopen the report before removing a comparable.", {status:409});
 
-  await env.DB.prepare(`
+  const deletionWrites = await env.DB.batch([env.DB.prepare(`
     DELETE FROM mini_comp_comparables
     WHERE id = ? AND report_id = ?
-  `).bind(compId, report.id).run();
-
-  await env.DB.prepare(`
+      AND EXISTS (SELECT 1 FROM mini_comp_reports WHERE id = ? AND status <> 'Approved')
+  `).bind(compId, report.id, report.id), env.DB.prepare(`
     UPDATE mini_comp_reports
     SET status = 'Draft', approved_at = NULL, updated_at = CURRENT_TIMESTAMP
-    WHERE id = ?
-  `).bind(report.id).run();
+    WHERE id = ? AND status <> 'Approved' AND changes() = 1
+  `).bind(report.id)]);
+
+  if (deletionWrites[0]?.meta?.changes !== 1) return new Response('Comparable or report changed. Reload before retrying.', {status:409});
 
   await syncMiniCompLibraryStatus(env, propertyId, report.id);
 
@@ -6817,7 +6818,8 @@ request.method === "POST" &&
     return new Response("Explain why the data is insufficient.", {status:400});
   }
 
-  await env.DB.prepare(`
+  if (report.status === 'Approved') return new Response('Approved reports cannot be changed through a draft form.', {status:409});
+  const savedDraft = await env.DB.prepare(`
     UPDATE mini_comp_reports
     SET
       status = ?,
@@ -6832,7 +6834,7 @@ request.method === "POST" &&
       END,
       approved_at = NULL,
       updated_at = CURRENT_TIMESTAMP
-    WHERE id = ?
+    WHERE id = ? AND status <> 'Approved'
   `).bind(
     status,
     field("executive_summary"),
@@ -6842,6 +6844,8 @@ request.method === "POST" &&
     status,
     report.id
   ).run();
+
+  if (savedDraft.meta?.changes !== 1) return new Response('Report changed during editing. Reload before retrying.', {status:409});
 
   await env.DB.prepare(`
     UPDATE mini_comp_queue
@@ -7261,7 +7265,7 @@ Capture the evidence as you research it. County Property Appraiser, Clerk/deed r
 <label class="full"><span>Why This Sale Is Comparable</span><textarea name="selection_reason" rows="3" maxlength="2000"></textarea></label>
 <label class="full"><span>Research Notes</span><textarea name="notes" rows="3" maxlength="4000"></textarea></label>
 </div>
-<div style="margin-top:14px"><button type="submit">Add Comparable</button></div>
+<div style="margin-top:14px"><button type="submit" ${report.status === 'Approved' ? 'disabled' : ''}>Add Comparable</button></div>
 </form>
 </div>
 
@@ -7278,7 +7282,8 @@ AI or staff may prepare the research and draft language, but the report remains 
 <label class="full"><span>Limitations / Important Differences</span><textarea name="limitations" rows="5" maxlength="8000">${esc(report.limitations)}</textarea></label>
 <label class="full"><span>Insufficient Data Reason</span><textarea name="insufficient_data_reason" rows="4" maxlength="4000">${esc(report.insufficient_data_reason)}</textarea></label>
 </div>
-<div style="margin-top:14px"><button type="submit">Save Mini-Comp Draft</button></div>
+${report.status === 'Approved' ? '<p class="section-note">This report is approved and preserved. Draft changes are disabled.</p>' : ''}
+<div style="margin-top:14px"><button type="submit" ${report.status === 'Approved' ? 'disabled' : ''}>Save Mini-Comp Draft</button></div>
 </form>
 </div>
 

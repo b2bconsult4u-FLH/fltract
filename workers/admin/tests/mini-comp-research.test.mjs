@@ -154,3 +154,40 @@ test('candidate review updates only its report, requires evidence and preserves 
   assert.equal(DB.sqlite.prepare('SELECT qualified_sale FROM mini_comp_comparables WHERE id=1').get().qualified_sale,'Yes');
  }finally{DB.sqlite.close();}
 });
+
+for (const action of ['save','comparable','delete']) {
+ test(`approved report rejects ${action} writes, including approval after the initial read`,async()=>{
+  const route=action==='delete'?'comparable\\/\\d+\\/delete':action;
+  const marker='/^\\/property\\/\\d+\\/mini-comp\\/'+route+'$/.test(url.pathname)';
+  const routeIndex=source.indexOf(marker);
+  const start=source.lastIndexOf('\nif (',routeIndex);
+  const nextReview=source.indexOf('\nif(request.method',routeIndex);
+  const nextOther=source.indexOf('\nif (',routeIndex);
+  const end=Math.min(...[nextReview,nextOther].filter(i=>i>routeIndex));
+  assert.ok(start>0&&routeIndex>start&&end>routeIndex,action+' route located');
+  const handler=new Function('return async function(request,env,staff,ensureMiniCompForProperty,sameOriginPost,redirect,syncMiniCompLibraryStatus,completeMiniCompResearchWork,numberOrNull,propertyCode){const url=new URL(request.url);'+source.slice(start,end)+'}')();
+  const DB=await database({status:'Draft'});
+  try {
+   let downstream=0;
+   const request=()=>new Request('https://example.invalid/property/1/mini-comp/'+(action==='delete'?'comparable/1/delete':action),{method:'POST',headers:{Origin:'https://example.invalid'},body:new URLSearchParams({status:'Ready for Review',executive_summary:'SYNTHETIC draft',property_location:'SYNTHETIC test only',qualified_sale:'Unknown',source_name:'Synthetic fixture',source_reference:'https://example.invalid/fixture'})});
+   const call=(race=false)=>handler(request(),{DB},{email:'synthetic@example.invalid'},async()=>{
+    const snapshot=DB.sqlite.prepare('SELECT * FROM mini_comp_reports WHERE id=1').get();
+    if(race)DB.sqlite.exec("UPDATE mini_comp_reports SET status='Approved',approved_at='2026-10-19T13:00:00Z' WHERE id=1");
+    return snapshot;
+   },()=>true,path=>new Response(null,{status:303,headers:{Location:path}}),async()=>{downstream++;},async()=>{downstream++;},value=>value?Number(value):null,id=>'SYNTHETIC-'+id);
+   DB.sqlite.exec("INSERT INTO mini_comp_comparables(id,report_id,qualified_sale) VALUES(1,1,'Unknown')");
+   assert.equal((await call()).status,303,'draft operation still succeeds');
+   if(action==='delete')DB.sqlite.exec("INSERT INTO mini_comp_comparables(id,report_id,qualified_sale) VALUES(1,1,'Unknown')");
+   for(const race of [false,true]) {
+    DB.sqlite.exec("UPDATE mini_comp_reports SET status='"+(race?'Draft':'Approved')+"',approved_at='2026-10-19T13:00:00Z' WHERE id=1");
+    const before={report:DB.sqlite.prepare('SELECT * FROM mini_comp_reports WHERE id=1').get(),comps:DB.sqlite.prepare('SELECT * FROM mini_comp_comparables').all(),queue:DB.sqlite.prepare('SELECT * FROM mini_comp_queue').all(),events:DB.sqlite.prepare('SELECT * FROM activity_log').all(),downstream};
+    assert.equal((await call(race)).status,409);
+    assert.deepEqual({...DB.sqlite.prepare('SELECT * FROM mini_comp_reports WHERE id=1').get()},{...before.report,status:'Approved'});
+    assert.deepEqual(DB.sqlite.prepare('SELECT * FROM mini_comp_comparables').all(),before.comps);
+    assert.deepEqual(DB.sqlite.prepare('SELECT * FROM mini_comp_queue').all(),before.queue);
+    assert.deepEqual(DB.sqlite.prepare('SELECT * FROM activity_log').all(),before.events);
+    assert.equal(downstream,before.downstream,'no completion or library side effects');
+   }
+  } finally { DB.sqlite.close(); }
+ });
+}
