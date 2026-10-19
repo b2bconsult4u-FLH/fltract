@@ -840,7 +840,8 @@ const INQUIRY_TYPES = [
 
   "Both / Exploring Options",
 
-  "General Property Question"
+  "General Property Question",
+  "Licensed Broker Referral"
 
 ];
 
