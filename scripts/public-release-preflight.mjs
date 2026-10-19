@@ -71,6 +71,8 @@ for (const path of routes) {
 for (const [path, pattern] of [
   ['/assets/css/site.css', /\.license-block/],
   ['/assets/js/property-records.js', /propertyRecords/],
+  ['/assets/js/florida-places.js', /countiesForCity/],
+  ['/assets/js/location-fields.js', /resolveCity/],
   ['/robots.txt', /Sitemap:/i],
   ['/sitemap.xml', /<urlset/],
 ]) {

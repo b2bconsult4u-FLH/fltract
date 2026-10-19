@@ -5,6 +5,7 @@ export function propertyQuery(input) {
   const location = text(input.property_location, 500);
   return {
     county: text(input.county, 100),
+    city: text(input.city, 100),
     parcel_id: text(input.parcel_id, 100),
     situs_address: input.property_location_kind === 'address' ? location : '',
     client_location: location,

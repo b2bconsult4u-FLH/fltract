@@ -1,3 +1,4 @@
+import { countiesForCity } from '../../assets/js/florida-places.js';
 import { afterInquirySaved } from '../../modules/property-records/intake-hook.mjs';
 const CONSENT_VERSION = "FLTRACT-CONSENT-2026-09-27-V1";
 
@@ -1374,7 +1375,7 @@ export default {
 
 
 
-    const county =
+    let county =
 
       clean(
 
@@ -1387,6 +1388,14 @@ export default {
 
 
 
+
+    const city = clean(input.city, 100);
+    const submittedCounty = county;
+    const cityCounties = countiesForCity(city);
+    if ((!county || county === 'Not Sure') && cityCounties.length === 1) county = cityCounties[0];
+    // Keep downstream research aligned with the saved inquiry. A supplied county
+    // always wins: a nearby city may be across the property's county line.
+    input = { ...input, city, county };
 
     const propertyType =
 
@@ -1514,7 +1523,7 @@ export default {
 
 
 
-    const details =
+    const originalDetails =
 
       clean(
 
@@ -1527,6 +1536,9 @@ export default {
 
 
 
+
+    const locationNote = city ? `City or nearby city: ${city}\nCounty supplied: ${submittedCounty || 'Unknown'}${submittedCounty !== county ? `\nCounty suggested from city: ${county} (parcel location unverified)` : ''}` : '';
+    const details = [originalDetails, locationNote].filter(Boolean).join('\n\n');
 
     const firstName =
 

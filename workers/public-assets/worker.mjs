@@ -1,6 +1,6 @@
 // Production static-asset boundary. Keep in sync with .assetsignore.
 const pages = ['', 'regions', 'brevard', 'indian-river', 'st-lucie', 'martin', 'okeechobee', 'tract-desk', 'landowner-guides', 'contact'];
-const publicPaths = new Set(['/robots.txt', '/sitemap.xml', '/assets/css/site.css', '/assets/js/property-records.js']);
+const publicPaths = new Set(['/robots.txt', '/sitemap.xml', '/assets/css/site.css', '/assets/js/property-records.js', '/assets/js/florida-places.js', '/assets/js/location-fields.js']);
 for (const page of pages) {
   const prefix = page ? '/' + page : '';
   publicPaths.add(prefix + '/');
