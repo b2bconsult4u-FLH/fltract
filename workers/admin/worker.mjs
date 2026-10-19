@@ -6676,7 +6676,8 @@ request.method === "POST" &&
     return new Response("Source name and source reference are required.", {status:400});
   }
 
-  await env.DB.prepare(`
+  if (report.status === 'Approved') return new Response('Approved reports cannot accept new comparables.', {status:409});
+  const comparableWrites = await env.DB.batch([env.DB.prepare(`
     INSERT INTO mini_comp_comparables (
       report_id,
       property_location,
@@ -6694,7 +6695,8 @@ request.method === "POST" &&
       selection_reason,
       notes
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?
+    WHERE EXISTS (SELECT 1 FROM mini_comp_reports WHERE id = ? AND status <> 'Approved')
   `).bind(
     report.id,
     field("property_location", 1000),
@@ -6709,19 +6711,17 @@ request.method === "POST" &&
     sourceName,
     sourceReference,
     field("selection_reason", 2000),
-    field("notes", 4000)
-  ).run();
-
-  await env.DB.prepare(`
+    field("notes", 4000),
+    report.id
+  ), env.DB.prepare(`
     UPDATE mini_comp_reports
-    SET status = CASE
-      WHEN status = 'Approved' THEN 'Ready for Review'
-      ELSE 'Draft'
-    END,
+    SET status = 'Draft',
     approved_at = NULL,
     updated_at = CURRENT_TIMESTAMP
-    WHERE id = ?
-  `).bind(report.id).run();
+    WHERE id = ? AND status <> 'Approved' AND changes() = 1
+  `).bind(report.id)]);
+
+  if (comparableWrites[0]?.meta?.changes !== 1) return new Response('Report changed during editing. Reload before retrying.', {status:409});
 
   await syncMiniCompLibraryStatus(env, propertyId, report.id);
 
@@ -6739,6 +6739,29 @@ request.method === "POST" &&
 }
 
 
+if(request.method === "POST" && /^\/property\/\d+\/mini-comp\/comparable\/\d+\/review$/.test(url.pathname)) {
+  if(!sameOriginPost(request))return new Response("Invalid request origin.",{status:403});
+  const parts=url.pathname.split("/").filter(Boolean);
+  const propertyId=Number(parts[1]),compId=Number(parts[4]);
+  const report=await ensureMiniCompForProperty(env,propertyId);
+  if(report.status==='Approved')return new Response("Reopen the report as a draft before changing reviewed candidates.",{status:409});
+  const comp=await env.DB.prepare("SELECT id FROM mini_comp_comparables WHERE id=? AND report_id=?").bind(compId,report.id).first();
+  if(!comp)return new Response("Comparable not found in this report.",{status:404});
+  const form=await request.formData();
+  const qualification=String(form.get('qualified_sale')||'');
+  const reason=String(form.get('selection_reason')||'').trim().slice(0,2000);
+  if(!['Yes','No','Unknown'].includes(qualification)||!reason)return new Response("Choose a qualification and record the review evidence/reason.",{status:400});
+  const reviewWrites=await env.DB.batch([
+    env.DB.prepare("UPDATE mini_comp_comparables SET qualified_sale=?,selection_reason=? WHERE id=? AND report_id=? AND EXISTS (SELECT 1 FROM mini_comp_reports r WHERE r.id=mini_comp_comparables.report_id AND r.status <> 'Approved')").bind(qualification,reason,compId,report.id),
+    env.DB.prepare("UPDATE mini_comp_reports SET updated_at=CURRENT_TIMESTAMP WHERE id=? AND status <> 'Approved'").bind(report.id),
+    env.DB.prepare("INSERT INTO activity_log(inquiry_id,activity_type,activity_note) SELECT primary_inquiry_id,'Mini-Comp Candidate Reviewed',? FROM properties WHERE id=? AND primary_inquiry_id IS NOT NULL AND EXISTS (SELECT 1 FROM mini_comp_reports r WHERE r.property_id=properties.id AND r.status <> 'Approved')").bind(`Candidate ${compId} reviewed by ${staff.email}: qualification ${qualification}. ${reason}`,propertyId)
+  ]);
+  // D1 batch is transactional: recheck approval at mutation time as well as read time.
+  if(reviewWrites[0]?.meta?.changes!==1)return new Response("Candidate or report changed during review. Reload before retrying.",{status:409});
+  return redirect(`/property/${propertyId}/mini-comp`);
+}
+
+
 if (
 request.method === "POST" &&
 /^\/property\/\d+\/mini-comp\/comparable\/\d+\/delete$/.test(url.pathname)
@@ -6751,17 +6774,19 @@ request.method === "POST" &&
   const propertyId = Number(parts[1]);
   const compId = Number(parts[4]);
   const report = await ensureMiniCompForProperty(env, propertyId);
+  if (report.status === "Approved") return new Response("Reopen the report before removing a comparable.", {status:409});
 
-  await env.DB.prepare(`
+  const deletionWrites = await env.DB.batch([env.DB.prepare(`
     DELETE FROM mini_comp_comparables
     WHERE id = ? AND report_id = ?
-  `).bind(compId, report.id).run();
-
-  await env.DB.prepare(`
+      AND EXISTS (SELECT 1 FROM mini_comp_reports WHERE id = ? AND status <> 'Approved')
+  `).bind(compId, report.id, report.id), env.DB.prepare(`
     UPDATE mini_comp_reports
     SET status = 'Draft', approved_at = NULL, updated_at = CURRENT_TIMESTAMP
-    WHERE id = ?
-  `).bind(report.id).run();
+    WHERE id = ? AND status <> 'Approved' AND changes() = 1
+  `).bind(report.id)]);
+
+  if (deletionWrites[0]?.meta?.changes !== 1) return new Response('Comparable or report changed. Reload before retrying.', {status:409});
 
   await syncMiniCompLibraryStatus(env, propertyId, report.id);
 
@@ -6793,7 +6818,8 @@ request.method === "POST" &&
     return new Response("Explain why the data is insufficient.", {status:400});
   }
 
-  await env.DB.prepare(`
+  if (report.status === 'Approved') return new Response('Approved reports cannot be changed through a draft form.', {status:409});
+  const savedDraft = await env.DB.prepare(`
     UPDATE mini_comp_reports
     SET
       status = ?,
@@ -6808,7 +6834,7 @@ request.method === "POST" &&
       END,
       approved_at = NULL,
       updated_at = CURRENT_TIMESTAMP
-    WHERE id = ?
+    WHERE id = ? AND status <> 'Approved'
   `).bind(
     status,
     field("executive_summary"),
@@ -6818,6 +6844,8 @@ request.method === "POST" &&
     status,
     report.id
   ).run();
+
+  if (savedDraft.meta?.changes !== 1) return new Response('Report changed during editing. Reload before retrying.', {status:409});
 
   await env.DB.prepare(`
     UPDATE mini_comp_queue
@@ -7133,9 +7161,14 @@ request.method === "GET" &&
 </td>
 <td>${esc(comp.selection_reason || "")}</td>
 <td>
-<form method="post" action="/property/${propertyId}/mini-comp/comparable/${comp.id}/delete" onsubmit="return confirm('Remove this comparable from the mini-comp?');">
+${report.status==='Approved'?'':`<form method="post" action="/property/${propertyId}/mini-comp/comparable/${comp.id}/review">
+<label>Qualified sale<select name="qualified_sale">${['Unknown','Yes','No'].map(value=>`<option${comp.qualified_sale===value?' selected':''}>${value}</option>`).join('')}</select></label>
+<label>Review evidence / selection reason<textarea name="selection_reason" required maxlength="2000">${esc(comp.selection_reason||'')}</textarea></label>
+<button type="submit" class="secondary">Save Candidate Review</button>
+</form>`}
+${report.status==='Approved'?'':`<form method="post" action="/property/${propertyId}/mini-comp/comparable/${comp.id}/delete" onsubmit="return confirm('Remove this comparable from the mini-comp?');">
 <button type="submit" class="secondary">Remove</button>
-</form>
+</form>`}
 </td>
 </tr>`;
       }).join("")
@@ -7199,6 +7232,7 @@ These figures are descriptive calculations from the recorded comparable sales. T
 <p class="section-note">
 Use public or otherwise authorized source data. Record the source reference and why the sale is comparable. Mark a sale Qualified only after its transaction and property characteristics have been checked. The working target is 10 researched candidates, with the strongest 3–5 selected for the final mini-comp.
 </p>
+<div class="work-queue-wrap" role="region" aria-label="Comparable sales table" tabindex="0">
 <table>
 <thead>
 <tr>
@@ -7207,6 +7241,7 @@ Use public or otherwise authorized source data. Record the source reference and 
 </thead>
 <tbody>${compRows}</tbody>
 </table>
+</div>
 </div>
 
 <div class="panel">
@@ -7230,7 +7265,7 @@ Capture the evidence as you research it. County Property Appraiser, Clerk/deed r
 <label class="full"><span>Why This Sale Is Comparable</span><textarea name="selection_reason" rows="3" maxlength="2000"></textarea></label>
 <label class="full"><span>Research Notes</span><textarea name="notes" rows="3" maxlength="4000"></textarea></label>
 </div>
-<div style="margin-top:14px"><button type="submit">Add Comparable</button></div>
+<div style="margin-top:14px"><button type="submit" ${report.status === 'Approved' ? 'disabled' : ''}>Add Comparable</button></div>
 </form>
 </div>
 
@@ -7247,7 +7282,8 @@ AI or staff may prepare the research and draft language, but the report remains 
 <label class="full"><span>Limitations / Important Differences</span><textarea name="limitations" rows="5" maxlength="8000">${esc(report.limitations)}</textarea></label>
 <label class="full"><span>Insufficient Data Reason</span><textarea name="insufficient_data_reason" rows="4" maxlength="4000">${esc(report.insufficient_data_reason)}</textarea></label>
 </div>
-<div style="margin-top:14px"><button type="submit">Save Mini-Comp Draft</button></div>
+${report.status === 'Approved' ? '<p class="section-note">This report is approved and preserved. Draft changes are disabled.</p>' : ''}
+<div style="margin-top:14px"><button type="submit" ${report.status === 'Approved' ? 'disabled' : ''}>Save Mini-Comp Draft</button></div>
 </form>
 </div>
 
@@ -10010,6 +10046,11 @@ async fetch(request, env, ctx) {
     await securityAudit(env,staff,request,"Attempt","Authorized private request",correlationId);
     await ensureClientSchema(env);
     const response = await adminFetch(request,env,staff,ctx);
+    // Keep same-origin forms usable: no-referrer can serialize POST Origin as
+    // "null". Suppress cross-origin referrers without relaxing write checks.
+    if (response.headers.get("content-type")?.startsWith("text/html")) {
+      response.headers.set("referrer-policy", "same-origin");
+    }
     try {
       await securityAudit(env,staff,request,response.status<400?"Completed":"Rejected",`HTTP ${response.status}`,correlationId);
     } catch {

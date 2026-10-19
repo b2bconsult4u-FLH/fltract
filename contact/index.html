@@ -35,7 +35,7 @@
   successAnother.addEventListener("click",function(){
     successModal.hidden=true;
     form.reset();
-    requiredFields.forEach(clearInvalid);
+    [...requiredFields,form.elements.phone,form.elements.live_call_opt_in].forEach(clearInvalid);
     if(lastContact){
       ["first_name","last_name","email","phone","preferred_contact","best_contact_time","referral_source"].forEach(function(name){
         const field=form.elements[name];
@@ -87,11 +87,12 @@
     const phone=form.elements["phone"];
     const preferred=form.elements["preferred_contact"].value;
     const liveCall=form.elements["live_call_opt_in"].checked;
+    const callPermission=form.elements["live_call_opt_in"];
+    callPermission.setCustomValidity((preferred==="Phone"||preferred==="Either Email or Phone")&&!liveCall?"Authorize live telephone follow-up or select Email.":"");
     phone.required=(preferred==="Phone"||preferred==="Either Email or Phone"||liveCall);
 
-    requiredFields.forEach(clearInvalid);
-    const validationFields=[...requiredFields];
-    if(phone.required&&!validationFields.includes(phone)) validationFields.push(phone);
+    [...requiredFields,form.elements.phone,form.elements.live_call_opt_in].forEach(clearInvalid);
+    const validationFields=[...new Set([...requiredFields,phone,callPermission])];
     const invalid=validationFields.filter(function(field){return !field.checkValidity();});
     if(invalid.length){
       invalid.forEach(markInvalid);
@@ -124,7 +125,7 @@
       try{result=await response.json();}catch(_){}
 
       if(!response.ok||!result.ok){
-        throw new Error(result.error||"Submission failed.");
+        throw new Error(result.error||(Array.isArray(result.errors)?result.errors.join(" "):"Submission failed."));
       }
 
       lastContact={
@@ -144,7 +145,7 @@
       successModal.hidden=false;
       successClose.focus();
     }catch(err){
-      status.innerHTML="<strong>We could not submit your inquiry.</strong> Your entries have not been cleared. Please try again.";
+      status.textContent="We could not submit your inquiry. "+(err.message||"Please try again.")+" Your entries have not been cleared.";
       button.disabled=false;
     }
   });

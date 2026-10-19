@@ -162,7 +162,9 @@ test('private lists render only scoped synthetic data using real SQLite',async()
  `);
  try{
   for(const [path,visible,hidden] of [['/','VisibleInquiry','HiddenInquiry'],['/clients','VisibleClient','HiddenClient'],['/followups','VisibleFollowup','HiddenFollowup'],['/work-routing','VisibleTask','HiddenTask']]){
-   const r=await worker.fetch(request(path),{...envConfig,DB});assert.equal(r.status,200,path);const html=await r.text();assert.ok(html.includes(visible),path+' visible row');assert.ok(!html.includes(hidden),path+' hidden row');
+   const r=await worker.fetch(request(path),{...envConfig,DB});assert.equal(r.status,200,path);
+   assert.equal(r.headers.get('referrer-policy'),'same-origin',path+' must support same-origin forms without disclosing external referrers');
+   const html=await r.text();assert.ok(html.includes(visible),path+' visible row');assert.ok(!html.includes(hidden),path+' hidden row');
   }
  }finally{sqlite.close();}
 });
@@ -179,7 +181,7 @@ test('audit chain handles concurrent append and long reason canonicalization wit
 
 test('all private read/write route variants reject anonymous and forged JWTs before DB',async()=>{
  const get=['/','/clients','/followups','/my-work','/export.csv','/security-audit','/intake-recovery','/client/1','/inquiry/1','/property/1','/property/1/mini-comp','/property/1/mini-comp/report','/property/1/library','/library/item/1','/library/version/1','/work-routing','/work-routing/1','/work-routing/1/history','/training','/training/manage','/sops','/sops/manage','/dry-run','/integrity'];
- const post=['/client/1/assign','/client/1/assignment/2/end','/property/1/assign','/property/1/assignment/2/end',...['status','note','archive','restore','followup','followup-complete','permission','referral','referral-send'].map(a=>'/inquiry/1/'+a),...['update','official-research','mini-comp/save','mini-comp/comparable','mini-comp/comparable/2/delete','mini-comp/approve'].map(a=>'/property/1/'+a),'/work-routing/1/progress','/work-routing/1/deadline','/work-routing/1/redirect','/work-routing/run','/work-routing/check-deadlines','/training/start','/training/session/1/review','/sops/requirement/1/acknowledge','/sops/1/new-version','/sops/1/publish','/dry-run','/integrity/scan','/integrity/1/review'];
+ const post=['/client/1/assign','/client/1/assignment/2/end','/property/1/assign','/property/1/assignment/2/end',...['status','note','archive','restore','followup','followup-complete','permission','referral','referral-send'].map(a=>'/inquiry/1/'+a),...['update','official-research','mini-comp/save','mini-comp/comparable','mini-comp/comparable/2/delete','mini-comp/comparable/2/review','mini-comp/approve'].map(a=>'/property/1/'+a),'/work-routing/1/progress','/work-routing/1/deadline','/work-routing/1/redirect','/work-routing/run','/work-routing/check-deadlines','/training/start','/training/session/1/review','/sops/requirement/1/acknowledge','/sops/1/new-version','/sops/1/publish','/dry-run','/integrity/scan','/integrity/1/review'];
  for(const [method,paths] of [['GET',get],['POST',post]])for(const path of paths){
   assert.ok(privateRoute(request(path,{method,origin:'https://example.invalid'})),method+' '+path);
   for(const jwt of [null,'forged.jwt.assertion']){
@@ -197,5 +199,14 @@ test('library parent and task assignment checks deny guessed IDs',async()=>{
 test('global integrity/export operations are denied to assigned Manager',async()=>{
  for(const path of ['/export.csv','/integrity','/dry-run']){
   const DB=fakeDB({role:'Manager',scope:true});const r=await worker.fetch(request(path),{...envConfig,DB});assert.equal(r.status,403,path);assert.equal(businessWrites(DB).length,0);
+ }
+});
+
+test('candidate review denies authenticated staff outside their property scope',async()=>{
+ for(const role of ['Employee','Manager']) {
+  const DB=fakeDB({role,scope:false});
+  const r=await worker.fetch(request('/property/1/mini-comp/comparable/2/review',{method:'POST',origin:'https://example.invalid',body:'qualified_sale=Yes&selection_reason=Synthetic+evidence'}),{...envConfig,DB});
+  assert.equal(r.status,403,role);
+  assert.equal(businessWrites(DB).length,0);
  }
 });

@@ -1,0 +1,24 @@
+name: Controlled live intake email acceptance
+on:
+  push:
+    branches:
+      - fix/intake-validation-current-main-2026-10-17
+    paths:
+      - scripts/intake-email-acceptance.mjs
+permissions:
+  contents: read
+concurrency:
+  group: controlled-intake-email-acceptance
+  cancel-in-progress: false
+jobs:
+  acceptance:
+    if: github.event.head_commit.message == 'Run controlled PR24 live email acceptance once'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Send one owner acknowledgment and internal office notice through preview intake
+        run: node scripts/intake-email-acceptance.mjs --send-owner-test

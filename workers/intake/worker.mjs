@@ -712,6 +712,28 @@ function validEmail(value) {
 
 
 
+// Bound actual streamed bytes; Content-Length alone cannot enforce this limit.
+async function boundedBody(request) {
+  const reader = request.body?.getReader();
+  if (!reader) throw new Error('INVALID_BODY');
+  const chunks = [];
+  let total = 0;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > 16384) {
+      await reader.cancel();
+      throw new Error('BODY_TOO_LARGE');
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  return new TextDecoder().decode(bytes);
+}
+
 async function readInput(request) {
 
   const contentType =
@@ -752,7 +774,9 @@ async function readInput(request) {
 
   ) {
 
-    return await request.json();
+    const value = JSON.parse(await boundedBody(request));
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('INVALID_BODY');
+    return value;
 
   }
 
@@ -772,9 +796,7 @@ async function readInput(request) {
 
   ) {
 
-    const form =
-
-      await request.formData();
+    const form = new URLSearchParams(await boundedBody(request));
 
 
 
@@ -1209,8 +1231,8 @@ export default {
     }
 
     catch (error) {
-
-
+      if (error.message === 'BODY_TOO_LARGE') return reply({ok:false,error:'Submission is too large. Please shorten your details.'},413);
+      if (error instanceof SyntaxError || error.message === 'INVALID_BODY') return reply({ok:false,error:'Invalid submission body.'},400);
 
       if (
 
@@ -1292,7 +1314,7 @@ export default {
 
       clean(
 
-        input.company_website,
+        input.company_website || input.website,
 
         500
 
@@ -1690,6 +1712,10 @@ export default {
 
 
     const errors = [];
+    if ((preferredContact === 'Phone' || preferredContact === 'Either Email or Phone') && liveCallOptIn !== 1) {
+      errors.push('Please authorize live telephone follow-up or select Email.');
+    }
+    if (phone && !/^[0-9]{10}$/.test(phone)) errors.push('Please enter a 10-digit phone number.');
 
 
 
