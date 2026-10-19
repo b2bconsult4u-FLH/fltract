@@ -3372,7 +3372,7 @@ We appreciate your contacting FLTract and look forward to serving you.`;
         <p>We appreciate your contacting FLTract and look forward to serving you.</p>
       `;
 
-      const questionnaireNote = questionnaireUrl ? "\\n\\nTo tell us more about your needs, complete your secure FLTract questionnaire: " + questionnaireUrl : "";
+      const questionnaireNote = questionnaireUrl ? "\n\nTo tell us more about your needs, complete your secure FLTract questionnaire: " + questionnaireUrl : "";
       const questionnaireHtml = questionnaireUrl ? '<p>To help us prepare a qualified referral, <a href="' + questionnaireUrl + '">complete your secure questionnaire</a>. This optional link expires in seven days.</p>' : '';
       const sendResult = await env.SEND_EMAIL.send({
         to: email,
