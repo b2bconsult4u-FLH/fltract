@@ -3347,17 +3347,17 @@ export default {
         ) || null;
 
       const emailText =
-`Thank you for contacting FLTract. We have received your property inquiry and will begin the review process using the information you provided.
+`Thank you for contacting FLTract. Your property inquiry has been received.
 
-FLTract is an information and referral resource. When appropriate, your inquiry will be referred to a licensed real estate professional best suited to the property and circumstances described.
+William McMullen, Florida Licensed Real Estate Sales Associate, will follow up with you to understand your goals, help identify suitable properties or resources, and coordinate with a broker or agent selected to handle your transaction.
 
 Please do not send sensitive financial information, passwords, Social Security numbers, or transaction documents through the FLTract contact form.
 
 We appreciate your contacting FLTract and look forward to serving you.`;
 
       const emailHtml = `
-        <p>Thank you for contacting FLTract. We have received your property inquiry and will begin the review process using the information you provided.</p>
-        <p>FLTract is an information and referral resource. When appropriate, your inquiry will be referred to a licensed real estate professional best suited to the property and circumstances described.</p>
+        <p>Thank you for contacting FLTract. Your property inquiry has been received.</p>
+        <p>William McMullen, Florida Licensed Real Estate Sales Associate, will follow up with you to understand your goals, help identify suitable properties or resources, and coordinate with a broker or agent selected to handle your transaction.</p>
         <p><strong>Please do not send sensitive financial information, passwords, Social Security numbers, or transaction documents through the FLTract contact form.</strong></p>
         <p>We appreciate your contacting FLTract and look forward to serving you.</p>
       `;
