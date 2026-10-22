@@ -75,3 +75,22 @@ test('questionnaire rejects cross-origin submission and completion without autho
  assert.equal((await handleQuestionnaire(submit(token,{intent:'complete',area:'Vero Beach',use:'Business',budget:'Not sure'}),f.env)).status,400);
  assert.equal([...f.records.values()][0].status,'Invited');
 });
+
+test('stale concurrent completion does not send a second office email',async()=>{
+ const f=fixture(),url=await createInvitation(f.db,88,'Selling Property','https://intake.example.com');
+ const token=new URL(url).searchParams.get('token');
+ const originalPrepare=f.db.prepare.bind(f.db);
+ let forceLostRace=true;
+ f.db.prepare=(sql)=>{
+   const stmt=originalPrepare(sql);
+   if(sql.startsWith('UPDATE intake_questionnaires')&&forceLostRace){
+     const originalRun=stmt.run.bind(stmt);
+     stmt.run=async()=>{forceLostRace=false;await originalRun();return {meta:{changes:0}};};
+   }
+   return stmt;
+ };
+ const res=await handleQuestionnaire(submit(token,{intent:'complete',authority:'Owner',sharing:'yes'}),f.env);
+ assert.equal(res.status,200);
+ assert.equal([...f.records.values()][0].status,'Completed');
+ assert.equal(f.sent.length,0);
+});
