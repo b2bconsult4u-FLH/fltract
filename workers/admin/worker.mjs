@@ -8007,6 +8007,20 @@ error
 }
 
 
+// Questionnaire is scoped to this inquiry, and is never sent to a broker automatically.
+let questionnaire = null;
+try {
+  questionnaire = await env.DB.prepare("SELECT category,status,answers_json,completed_at,updated_at FROM intake_questionnaires WHERE inquiry_id=?").bind(id).first();
+} catch (error) {
+  if (!/no such table/i.test(String(error?.message || error))) console.error("Questionnaire read failed", error);
+}
+let questionnaireAnswers = {};
+try { questionnaireAnswers = JSON.parse(questionnaire?.answers_json || "{}"); } catch {}
+const questionnaireStatus = questionnaire?.status || "Not Sent";
+const questionnaireSummary = Object.entries(questionnaireAnswers)
+  .filter(([key,value]) => key !== "sharing" && String(value || "").trim())
+  .map(([key,value]) => key.replaceAll("_"," ") + ": " + String(value)).join("\\n");
+
 const activities =
 await env.DB.prepare(`
 SELECT *
@@ -9355,6 +9369,9 @@ ${activityHtml}
 <h2>
 Prepare Referral
 </h2>
+<p class="section-note"><strong>Client questionnaire: ${esc(questionnaireStatus)}</strong>${questionnaire?.completed_at ? " — completed " + esc(questionnaire.completed_at) : ""}</p>
+${questionnaireSummary ? `<details><summary>Review client questionnaire answers</summary><pre style="white-space:pre-wrap">${esc(questionnaireSummary)}</pre></details>` : "<p class=\"section-note\">No questionnaire answers received yet.</p>"}
+
 
 <p class="section-note">
 Prepare and review the referral here. Nothing is sent until you use the separate Approve &amp; Send Referral button in Referral History.
@@ -9409,6 +9426,9 @@ Property location: ${esc(inquiry.property_location)}
 
 Client inquiry:
 ${esc(clientDetailsDisplay(inquiry.details) || "No additional client details provided.")}
+
+Client questionnaire (${esc(questionnaireStatus)}):
+${esc(questionnaireSummary || "No questionnaire responses received.")}
 
 Please review the inquiry and contact the client directly as appropriate.
 

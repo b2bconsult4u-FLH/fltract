@@ -210,6 +210,8 @@ test('replacement intake succeeds when optional module is absent or unavailable,
 test('removing the module hook/import leaves a working core Worker', async () => {
   const source = readFileSync(new URL('../../../workers/intake/worker.mjs', import.meta.url), 'utf8')
     .replace(/^import.*afterInquirySaved.*\n/m, '')
+    // A data: module has no directory for resolving remaining relative imports.
+    .replace('./questionnaire.mjs', new URL('../../../workers/intake/questionnaire.mjs', import.meta.url).href)
     .replace('../../assets/js/florida-places.js', new URL('../../../assets/js/florida-places.js', import.meta.url).href)
     .replace(/    \/\/ Optional, fail-open county research;[\s\S]*?    \/\* --------------------------------------------------------\*\n\*       LINK CLIENT ACCOUNT/, '    /* --------------------------------------------------------*\\n*       LINK CLIENT ACCOUNT');
   const stripped = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);

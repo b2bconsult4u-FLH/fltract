@@ -10,6 +10,7 @@ on:
       - 'workers/intake/**'
       - 'workers/admin/**'
       - 'contact/**'
+      - 'tests/questionnaire.test.mjs'
       - '.github/workflows/fltract-foundation-tests.yml'
       - 'package.json'
       - 'package-lock.json'
@@ -34,6 +35,8 @@ jobs:
         run: node --test modules/property-records/tests/milestone-c-recovery.test.mjs
       - name: Run property-record and intake-contract tests
         run: node --test modules/property-records/tests/*.test.mjs
+      - name: Run questionnaire tests (isolated, no production writes)
+        run: node --test tests/questionnaire.test.mjs
       - name: Run admin security acceptance tests
         run: node --test workers/admin/tests/*.test.mjs
 
