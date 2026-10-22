@@ -44,7 +44,13 @@ export async function handleQuestionnaire(request,env){
  if(intent==="complete" && record.category==="buyer" && (!answers.area || !answers.budget || !answers.use))return json({ok:false,error:"Please provide your preferred area, intended use and approximate budget (Not sure is acceptable)."},400);
  if(intent==="complete"&&data.get("sharing")!=="yes")return json({ok:false,error:"Authorization is required to complete the questionnaire"},400);
  if(data.get("sharing")==="yes")answers.sharing="yes";
- await env.DB.prepare("UPDATE intake_questionnaires SET answers_json=?,status=?,consent_version=?,completed_at=CASE WHEN ?='Completed' THEN CURRENT_TIMESTAMP ELSE NULL END,updated_at=CURRENT_TIMESTAMP WHERE inquiry_id=? AND token_hash=? AND status<>'Completed'").bind(JSON.stringify(answers),intent==="complete"?"Completed":"Partially Completed","FLTRACT-QUESTIONNAIRE-2026-10-19-V1",intent==="complete"?"Completed":"Partially Completed",record.inquiry_id,hash).run();
+ const result=await env.DB.prepare("UPDATE intake_questionnaires SET answers_json=?,status=?,consent_version=?,completed_at=CASE WHEN ?='Completed' THEN CURRENT_TIMESTAMP ELSE NULL END,updated_at=CURRENT_TIMESTAMP WHERE inquiry_id=? AND token_hash=? AND status<>'Completed'").bind(JSON.stringify(answers),intent==="complete"?"Completed":"Partially Completed","FLTRACT-QUESTIONNAIRE-2026-10-19-V1",intent==="complete"?"Completed":"Partially Completed",record.inquiry_id,hash).run();
+ // Only the request that actually transitions the inquiry to Completed may notify the office.
+ // This also prevents a stale concurrent submission from overwriting completed answers.
+ if(Number(result?.meta?.changes||0)===0){
+   const latest=await env.DB.prepare("SELECT * FROM intake_questionnaires WHERE token_hash=?").bind(hash).first();
+   return page(latest||record,token);
+ }
  if(intent==="complete" && env.SEND_EMAIL){
    try {
      await env.SEND_EMAIL.send({
