@@ -1048,6 +1048,8 @@ export default {
 
 
   async fetch(request, env, ctx) {
+    // Questionnaire has its own same-origin POST validation; route it before the intake CORS guard.
+    if (new URL(request.url).pathname === "/questionnaire") return handleQuestionnaire(request, env);
     const origin = request.headers.get("Origin");
     const allowedOrigins = new Set(["https://fltract.com", "https://www.fltract.com", "https://fltract.b2bconsult4u.workers.dev", "https://feature-secure-referral-questionnaire-fltract.b2bconsult4u.workers.dev"]);
     if (origin && origin !== new URL(request.url).origin && !allowedOrigins.has(origin)) {
@@ -1079,7 +1081,6 @@ export default {
 
 
 
-    if (url.pathname === "/questionnaire") return handleQuestionnaire(request, env);
 
     if (!env.DB) {
 
