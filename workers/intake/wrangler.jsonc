@@ -16,4 +16,14 @@
       "name": "SEND_EMAIL"
     }
   ]
+  ,"env": {
+    "preview": {
+      "name": "fltract-intake-pr31-preview",
+      "d1_databases": [{
+        "binding": "DB",
+        "database_name": "fltract-preview",
+        "database_id": "d1398b4b-b196-42f6-a862-6b70177e8bb1"
+      }]
+    }
+  }
 }
