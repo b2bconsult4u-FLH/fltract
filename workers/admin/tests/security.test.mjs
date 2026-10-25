@@ -210,3 +210,56 @@ test('candidate review denies authenticated staff outside their property scope',
   assert.equal(businessWrites(DB).length,0);
  }
 });
+
+test('recovery HTTP route isolates managers with real team SQL and signed identities',async()=>{
+ const sqlite=new DatabaseSync(':memory:');
+ const DB={prepare(sql){let args=[];return {bind(...a){args=a;return this;},async all(){return {results:sqlite.prepare(sql).all(...args)};},async first(){return sqlite.prepare(sql).get(...args)||null;},async run(){const r=sqlite.prepare(sql).run(...args);return {success:true,meta:{changes:Number(r.changes),last_row_id:Number(r.lastInsertRowid)}};}};},async batch(stmts){sqlite.exec('BEGIN');try{const out=[];for(const stmt of stmts)out.push(await stmt.run());sqlite.exec('COMMIT');return out;}catch(e){sqlite.exec('ROLLBACK');throw e;}}};
+ const start=source.indexOf('async function ensureClientSchema(env) {');
+ const end=source.indexOf('async function ensureClientForInquiry(',start);
+ const ensure=new Function('let clientSchemaReady=false;'+source.slice(start,end)+';return ensureClientSchema;')();
+ await ensure({DB});
+ sqlite.exec(`
+ CREATE TABLE inquiries(id INTEGER PRIMARY KEY,first_name TEXT,last_name TEXT,county TEXT,property_location TEXT);
+ CREATE TABLE compliance_rules(rule_key TEXT,rule_value TEXT);
+ CREATE TABLE intake_recovery_queue(inquiry_id INTEGER PRIMARY KEY,status TEXT,attempts INTEGER,last_error TEXT,updated_at TEXT);
+ INSERT INTO staff_users(id,email,role,active) VALUES
+ (9,'owner@example.invalid','Manager',1),(19,'second@example.invalid','Manager',1),
+ (11,'a@example.invalid','Employee',1),(21,'b@example.invalid','Employee',1),
+ (12,'ended@example.invalid','Employee',1),(13,'inactive-team@example.invalid','Employee',1);
+ INSERT INTO staff_teams(id,name,manager_staff_user_id,active) VALUES(1,'A',9,1),(2,'B',19,1),(3,'Inactive',9,0);
+ INSERT INTO staff_team_members(team_id,staff_user_id,active) VALUES(1,11,1),(2,21,1),(1,12,0),(3,13,1);
+ `);
+ const fixtures=[
+  [1,'TeamA',11,'a@example.invalid'],[2,'TeamB',21,'b@example.invalid'],
+  [3,'OwnManager',9,'owner@example.invalid'],[4,'Unassigned',null,''],
+  [5,'EndedMember',12,'ended@example.invalid'],[6,'InactiveTeam',13,'inactive-team@example.invalid'],
+  [7,'LegacyEmail',null,'A@EXAMPLE.INVALID'],[8,'ConflictingEmail',21,'a@example.invalid'],
+  [9,'LatestOtherTeam',21,'b@example.invalid'],[10,'NoWorkItem',null,'']
+ ];
+ for(const [id,label,assignee,email] of fixtures){
+  sqlite.prepare('INSERT INTO inquiries VALUES(?,?,?,?,?)').run(id,label+'Client','Synthetic',label+'County',label+'Parcel');
+  sqlite.prepare('INSERT INTO intake_recovery_queue VALUES(?,?,?,?,?)').run(id,'Retry Pending',1,label+'Error','2026-10-01');
+  if(id!==10)sqlite.prepare("INSERT INTO flt_work_items(id,work_type,title,subject_type,subject_id,assigned_staff_user_id,assigned_staff_email,status) VALUES(?,'Intake Recovery',?,'inquiry',?,?,?,'Assigned')").run(id,label,id,assignee,email);
+ }
+ // An earlier assignment must not expose a recovery item now owned by another team.
+ sqlite.prepare("INSERT INTO flt_work_items(id,work_type,title,subject_type,subject_id,assigned_staff_user_id,status) VALUES(0,'Intake Recovery','Old assignment','inquiry',9,11,'Completed')").run();
+ const snapshot=()=>JSON.stringify(['inquiries','intake_recovery_queue','flt_work_items','staff_teams','staff_team_members'].map(table=>sqlite.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()));
+ const before=snapshot();
+ try{
+  for(const [email,visible] of [['owner@example.invalid',[1,3,7]],['second@example.invalid',[2,8,9]]]){
+   const r=await worker.fetch(request('/intake-recovery',{jwt:await token({email})}),{...envConfig,DB});
+   assert.equal(r.status,200);assert.equal(r.headers.get('cache-control'),'no-store');
+   const html=await r.text();
+   for(const [id,label] of fixtures){
+    for(const suffix of ['Client','County','Parcel','Error'])assert.equal(html.includes(label+suffix),visible.includes(id),email+' '+label+suffix);
+    assert.equal(html.includes(`/work-routing/${id}\"`),visible.includes(id),email+' task '+id);
+   }
+  }
+  for(const role of ['Administrator','CEO']){
+   sqlite.prepare('UPDATE staff_users SET role=? WHERE id=9').run(role);
+   const r=await worker.fetch(request('/intake-recovery'),{...envConfig,DB});assert.equal(r.status,200);
+   const html=await r.text();for(const [,label] of fixtures)assert.ok(html.includes(label+'Client'),role+' '+label);
+  }
+  assert.equal(snapshot(),before,'recovery reads must not change business records');
+ }finally{sqlite.close();}
+});
