@@ -11,15 +11,16 @@ const roleCanReceiveWork=(role,required)=>(rank[String(role||'').toLowerCase()]|
 const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function check(staff,rows=[]){
   const actions=[];
-  const env={DB:{prepare(sql){return {async all(){actions.push('read');return {results:rows}}}}}};
+  const env={DB:{prepare(sql){return {bind(){return this;},async all(){actions.push('read');return {results:rows}}}}}};
   const request=new Request('https://example.invalid/intake-recovery');
   const url=new URL(request.url);
   const logStaffAccess=async()=>{actions.push('denied-audit')};
   const page=html=>html;
   const floridaTime=x=>x;
-  const run=new Function('request','url','staff','env','roleCanReceiveWork','logStaffAccess','page','esc','floridaTime',
+  const broadRecords=user=>!!user?.active&&['Administrator','CEO'].includes(user.role);
+  const run=new Function('request','url','staff','env','roleCanReceiveWork','logStaffAccess','page','esc','floridaTime','broadRecords',
     'return (async()=>{'+route+'})();');
-  const response=await run(request,url,staff,env,roleCanReceiveWork,logStaffAccess,page,esc,floridaTime);
+  const response=await run(request,url,staff,env,roleCanReceiveWork,logStaffAccess,page,esc,floridaTime,broadRecords);
   return {response,actions,body:await response.text()};
 }
 test('anonymous cannot read recovery queue and is audited',async()=>{

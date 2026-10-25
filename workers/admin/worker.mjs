@@ -3508,6 +3508,22 @@ if (request.method === "GET" && url.pathname === "/intake-recovery") {
     await logStaffAccess(env, staff, request, "Intake Recovery", "Denied");
     return new Response("Manager access required.", {status: 403});
   }
+  // Failed intake may not have a client link yet. Scope recovery through its
+  // latest work assignment; executives retain visibility of unassigned failures.
+  // A populated staff ID is authoritative over a stale assignment email.
+  const recoveryScope = broadRecords(staff.user) ? "1=1" : `(
+    w.assigned_staff_user_id=?
+    OR (w.assigned_staff_user_id IS NULL AND lower(w.assigned_staff_email)=lower(?))
+    OR EXISTS (
+      SELECT 1 FROM staff_teams t
+      JOIN staff_team_members tm ON tm.team_id=t.id AND tm.active=1
+      JOIN staff_users su ON su.id=tm.staff_user_id AND su.active=1
+      WHERE t.active=1 AND t.manager_staff_user_id=?
+        AND (w.assigned_staff_user_id=su.id
+          OR (w.assigned_staff_user_id IS NULL AND lower(w.assigned_staff_email)=lower(su.email)))
+    )
+  )`;
+  const recoveryScopeArgs = broadRecords(staff.user) ? [] : [staff.user.id,staff.email,staff.user.id];
   const rows = await env.DB.prepare(`
     SELECT q.inquiry_id, q.status, q.attempts, q.last_error, q.updated_at,
            i.first_name, i.last_name, i.county, i.property_location,
@@ -3520,9 +3536,10 @@ if (request.method === "GET" && url.pathname === "/intake-recovery") {
         AND w2.subject_type = 'inquiry'
         AND w2.subject_id = q.inquiry_id
     )
+    WHERE ${recoveryScope}
     ORDER BY CASE WHEN q.status = 'Resolved' THEN 1 ELSE 0 END,
              q.updated_at DESC LIMIT 100
-  `).all();
+  `).bind(...recoveryScopeArgs).all();
   const records = (rows.results || []).map(r => `<tr>
     <td>#${Number(r.inquiry_id)}</td>
     <td>${esc(r.first_name)} ${esc(r.last_name)}</td>
