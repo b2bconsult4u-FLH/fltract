@@ -13,7 +13,7 @@ function section(start, end) {
 }
 const functions = new Function(
   section('function roleCanReceiveWork(', 'async function adminFetch(') +
-  section('async function staffHasCompetency(', 'function canActOnWork(') +
+  section('async function staffHasCompetency(', 'async function canAccessWorkRecord(') +
   ';return {routeQueuedWork,checkWorkDeadlines};'
 )();
 async function database() {

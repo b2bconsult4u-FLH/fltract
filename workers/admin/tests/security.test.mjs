@@ -4,7 +4,7 @@ import {readFileSync} from 'node:fs';
 import {DatabaseSync} from 'node:sqlite';
 import {generateKeyPair,exportJWK,SignJWT,createLocalJWKSet} from 'jose';
 import worker from '../worker.mjs';
-import {verifiedAccessIdentity,sameOriginWrite,PRIVATE_ROUTES,privateRoute,routeAuthorized,clientScopeSQL,inquiryScopeSQL} from '../security.mjs';
+import {verifiedAccessIdentity,sameOriginWrite,PRIVATE_ROUTES,privateRoute,routeAuthorized,clientScopeSQL,inquiryScopeSQL,workTargetScopeSQL} from '../security.mjs';
 const source=readFileSync(new URL('../worker.mjs',import.meta.url),'utf8');
 function productionFunctions(start,end,names){
  return new Function(source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start)))+';return {'+names+'};')();
@@ -50,6 +50,27 @@ function fakeDB({role='Administrator',active=1,unknown=false,scope=false,auditFa
  };}}
 }
 function businessWrites(DB){return DB.calls.filter(c=>c.kind==='write'&&!c.sql.includes('staff_access_log'));}
+for (const path of ['/work-routing/run','/work-routing/check-deadlines']) {
+ test(`Manager cannot invoke global operation ${path}`,async()=>{
+  const DB=fakeDB({role:'Manager'});
+  const response=await worker.fetch(request(path,{method:'POST',origin:'https://example.invalid'}),{...envConfig,DB});
+  assert.equal(response.status,403);
+  assert.equal(businessWrites(DB).length,0);
+  assert.ok(!DB.calls.some(c=>c.kind==='schema-batch'));
+  assert.ok(!DB.calls.some(c=>/flt_work_items|mini_comp_queue/.test(c.sql||'')),'denied request must not inspect global work');
+  assert.ok(DB.calls.some(c=>c.sql?.includes('INSERT INTO staff_access_log')&&c.args.includes('Denied')));
+ });
+ for (const role of ['Administrator','CEO']) test(`${role} retains global operation ${path}`,async()=>{
+  const decision=await routeAuthorized({}, {user:{id:9,role,active:1}},request(path,{method:'POST',origin:'https://example.invalid'}),{staffCan});
+  assert.equal(decision.allowed,true);
+ });
+}
+for (const role of ['Manager','Administrator','CEO']) test(`${role} global routing controls match authorization`,async()=>{
+ const response=await worker.fetch(request('/work-routing'),{...envConfig,DB:fakeDB({role})});
+ assert.equal(response.status,200);
+ const html=await response.text();
+ for(const path of ['/work-routing/run','/work-routing/check-deadlines']) assert.equal(html.includes(`action="${path}"`),role!=='Manager');
+});
 const paths=['/','/clients','/followups','/my-work','/export.csv','/security-audit','/intake-recovery','/inquiry/1','/inquiry/1/status','/client/1','/property/1','/property/1/update','/library/item/1','/library/version/1','/work-routing','/training','/sops','/integrity','/dry-run'];
 for(const path of paths)test(`anonymous/spoofed identity rejected before DB: ${path}`,async()=>{
  const DB=fakeDB();for(const jwt of [null,'invalid']){
@@ -209,4 +230,243 @@ test('candidate review denies authenticated staff outside their property scope',
   assert.equal(r.status,403,role);
   assert.equal(businessWrites(DB).length,0);
  }
+});
+
+async function teamWorkFixture() {
+ const sqlite=new DatabaseSync(':memory:');
+ const DB={prepare(sql){let args=[];return {bind(...a){args=a;return this;},async all(){return {results:sqlite.prepare(sql).all(...args)};},async first(){return sqlite.prepare(sql).get(...args)||null;},async run(){const r=sqlite.prepare(sql).run(...args);return {success:true,meta:{changes:Number(r.changes),last_row_id:Number(r.lastInsertRowid)}};}};},async batch(statements){sqlite.exec('BEGIN');try{const rows=[];for(const stmt of statements)rows.push(await stmt.run());sqlite.exec('COMMIT');return rows;}catch(error){sqlite.exec('ROLLBACK');throw error;}}};
+ // Schema helper closes over its initialization flag.
+ const begin=source.indexOf('async function ensureClientSchema(env) {'), end=source.indexOf('async function ensureClientForInquiry(',begin);
+ await new Function('let clientSchemaReady=false;'+source.slice(begin,end)+';return ensureClientSchema;')()({DB});
+ sqlite.exec(`
+ CREATE TABLE compliance_rules(rule_key TEXT,rule_value TEXT);
+ INSERT INTO staff_users(id,email,role,active) VALUES
+ (9,'owner@example.invalid','Manager',1),(19,'manager-b@example.invalid','Manager',1),
+ (11,'member-a@example.invalid','Employee',1),(21,'member-b@example.invalid','Employee',1),
+ (12,'ended@example.invalid','Employee',1),(13,'inactive-team@example.invalid','Employee',1),
+ (14,'inactive-staff@example.invalid','Employee',0);
+ INSERT INTO staff_teams(id,name,manager_staff_user_id,active) VALUES(1,'A',9,1),(2,'B',19,1),(3,'Inactive',9,0);
+ INSERT INTO staff_team_members(team_id,staff_user_id,active) VALUES(1,11,1),(2,21,1),(1,12,0),(3,13,1),(1,14,1);
+ `);
+ const fixtures=[
+ [1,'TeamA',11,'member-a@example.invalid'],[2,'TeamB',21,'member-b@example.invalid'],
+ [3,'OwnManager',9,'owner@example.invalid'],[4,'Unassigned',null,''],
+ [5,'LegacyEmail',null,'MEMBER-A@EXAMPLE.INVALID'],[6,'ConflictingEmail',21,'member-a@example.invalid'],
+ [7,'InactiveTeam',13,'inactive-team@example.invalid'],[8,'EndedMember',12,'ended@example.invalid'],
+ [9,'InactiveStaff',14,'inactive-staff@example.invalid']];
+ for(const [id,label,assignee,email] of fixtures)sqlite.prepare("INSERT INTO flt_work_items(id,work_type,title,assigned_staff_user_id,assigned_staff_email,status) VALUES(?,'Synthetic',?,?,?,'Assigned')").run(id,label,assignee,email);
+ const snapshot=()=>JSON.stringify(['flt_work_items','flt_work_routing_events','staff_teams','staff_team_members'].map(table=>sqlite.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()));
+ return {sqlite,DB,fixtures,snapshot};
+}
+
+test('manager work list and counts include only own and active-team work',async()=>{
+ const f=await teamWorkFixture();try{
+  const before=f.snapshot();
+  for(const [email,visible] of [['owner@example.invalid',[1,3,5]],['manager-b@example.invalid',[2,6]]]){
+   const r=await worker.fetch(request('/work-routing',{jwt:await token({email})}),{...envConfig,DB:f.DB});
+   assert.equal(r.status,200);const html=await r.text();
+   for(const [id,label] of f.fixtures)assert.equal(html.includes(`<strong>${label}</strong>`),visible.includes(id),email+' '+label);
+   assert.ok(html.includes(`${visible.length} matching tasks`));
+  }
+  assert.equal(f.snapshot(),before);
+ }finally{f.sqlite.close();}
+});
+
+test('manager guessed task reads and mutations deny other teams without business changes',async()=>{
+ const f=await teamWorkFixture();try{
+  const before=f.snapshot();
+  for(const id of [2,4,6,7,8,9])for(const [suffix,method,body] of [['','GET'],['/history','GET'],['/progress','POST','action=start'],['/deadline','POST','hours=24&warning_minutes=60&reason=Synthetic'],['/redirect','POST','target_staff_id=11&reason=Synthetic']]){
+   const r=await worker.fetch(request(`/work-routing/${id}${suffix}`,{method,origin:'https://example.invalid',body}),{...envConfig,DB:f.DB});
+   assert.equal(r.status,403,`${id}${suffix}`);
+   assert.equal(f.snapshot(),before,`${id}${suffix} business state`);
+  }
+ }finally{f.sqlite.close();}
+});
+
+test('manager can read own/team task history and set scoped deadlines',async()=>{
+ const f=await teamWorkFixture();try{
+  for(const id of [1,3,5]){
+   for(const suffix of ['','/history']){
+    const r=await worker.fetch(request(`/work-routing/${id}${suffix}`),{...envConfig,DB:f.DB});
+    assert.equal(r.status,200,`${id}${suffix}`);
+    if(!suffix){const html=await r.text();assert.ok(!html.includes('member-b@example.invalid'),'target selector must not disclose other team');assert.ok(!html.includes('ended@example.invalid'));assert.ok(!html.includes('inactive-team@example.invalid'));}
+   }
+   const r=await worker.fetch(request(`/work-routing/${id}/deadline`,{method:'POST',origin:'https://example.invalid',body:'hours=24&warning_minutes=60&reason=Synthetic'}),{...envConfig,DB:f.DB});
+   assert.equal(r.status,303);assert.ok(f.sqlite.prepare('SELECT due_at FROM flt_work_items WHERE id=?').get(id).due_at);
+  }
+ }finally{f.sqlite.close();}
+});
+
+test('manager redirect rejects outside/inactive targets but permits active own-team target',async()=>{
+ const f=await teamWorkFixture();try{
+  const before=f.snapshot();
+  for(const target of [21,19,12,13,14,999]){
+   const r=await worker.fetch(request('/work-routing/1/redirect',{method:'POST',origin:'https://example.invalid',body:`target_staff_id=${target}&reason=Synthetic`}),{...envConfig,DB:f.DB});
+   assert.equal(r.status,403,'target '+target);assert.equal(f.snapshot(),before);
+  }
+  const r=await worker.fetch(request('/work-routing/3/redirect',{method:'POST',origin:'https://example.invalid',body:'target_staff_id=11&reason=Synthetic'}),{...envConfig,DB:f.DB});
+  assert.equal(r.status,303);assert.equal(f.sqlite.prepare('SELECT assigned_staff_user_id FROM flt_work_items WHERE id=3').get().assigned_staff_user_id,11);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM flt_work_routing_events WHERE work_item_id=3').get().n,1);
+ }finally{f.sqlite.close();}
+});
+
+test('Administrator and CEO retain global task visibility and redirect destinations',async()=>{
+ const f=await teamWorkFixture();try{
+  for(const role of ['Administrator','CEO']){
+   f.sqlite.prepare('UPDATE staff_users SET role=? WHERE id=9').run(role);
+   const r=await worker.fetch(request('/work-routing/2'),{...envConfig,DB:f.DB});assert.equal(r.status,200);
+   assert.ok((await r.text()).includes('member-b@example.invalid'));
+   const list=await worker.fetch(request('/work-routing'),{...envConfig,DB:f.DB});assert.equal(list.status,200);assert.ok((await list.text()).includes('9 matching tasks'));
+  }
+ }finally{f.sqlite.close();}
+});
+
+test('employee sees only assigned IDs and legacy email; membership revocation removes manager access',async()=>{
+ const f=await teamWorkFixture();try{
+  const jwt=await token({email:'member-a@example.invalid'});
+  for(const id of [1,5])assert.equal((await worker.fetch(request(`/work-routing/${id}`,{jwt}),{...envConfig,DB:f.DB})).status,200);
+  for(const id of [2,3,4,6])assert.equal((await worker.fetch(request(`/work-routing/${id}`,{jwt}),{...envConfig,DB:f.DB})).status,403);
+  const r=await worker.fetch(request('/work-routing?status=Assigned',{jwt}),{...envConfig,DB:f.DB});
+  assert.equal(r.status,200);assert.ok((await r.text()).includes('2 matching tasks'));
+  f.sqlite.exec('UPDATE staff_team_members SET active=0 WHERE team_id=1 AND staff_user_id=11');
+  for(const id of [1,5])assert.equal((await worker.fetch(request(`/work-routing/${id}`),{...envConfig,DB:f.DB})).status,403);
+  assert.equal((await worker.fetch(request('/work-routing/3'),{...envConfig,DB:f.DB})).status,200);
+ }finally{f.sqlite.close();}
+});
+
+test('deadline write rechecks team scope after a concurrent reassignment',async()=>{
+ const f=await teamWorkFixture();try{
+  const batch=f.DB.batch.bind(f.DB);
+  f.DB.batch=async statements=>{
+   f.sqlite.exec("UPDATE flt_work_items SET assigned_staff_user_id=21,assigned_staff_email='member-b@example.invalid' WHERE id=1");
+   return batch(statements);
+  };
+  const r=await worker.fetch(request('/work-routing/1/deadline',{method:'POST',origin:'https://example.invalid',body:'hours=24&warning_minutes=60&reason=Synthetic'}),{...envConfig,DB:f.DB});
+  assert.equal(r.status,409);
+  const item=f.sqlite.prepare('SELECT * FROM flt_work_items WHERE id=1').get();
+  assert.equal(item.assigned_staff_user_id,21);assert.equal(item.due_at,null);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM flt_work_routing_events').get().n,0);
+ }finally{f.sqlite.close();}
+});
+
+async function assignmentFixture() {
+ const f=await teamWorkFixture();
+ f.sqlite.exec(`
+ INSERT INTO clients(id,normalized_email,first_name) VALUES(10,'client-a@example.invalid','A'),(20,'client-b@example.invalid','B'),(30,'shared@example.invalid','Shared');
+ INSERT INTO properties(id,client_id,property_location) VALUES(101,10,'Synthetic A'),(201,20,'Synthetic B'),(301,30,'Synthetic Shared');
+ INSERT INTO client_assignments(id,client_id,staff_user_id,active) VALUES(101,10,11,1),(201,20,21,1),(301,30,11,1),(302,30,21,1);
+ INSERT INTO property_assignments(id,property_id,staff_user_id,active) VALUES(101,101,11,1),(201,201,21,1),(301,301,11,1),(302,301,21,1);
+ `);
+ f.assignments=()=>JSON.stringify(['client_assignments','property_assignments'].map(t=>f.sqlite.prepare(`SELECT * FROM ${t} ORDER BY id`).all()));
+ return f;
+}
+
+test('manager cannot assign client/property records to other-team or inactive staff',async()=>{
+ const f=await assignmentFixture();try{
+  const before=f.assignments();
+  for(const [type,id] of [['client',10],['property',101]])for(const target of [21,19,12,13,14,999]){
+   const r=await worker.fetch(request(`/${type}/${id}/assign`,{method:'POST',origin:'https://example.invalid',body:`staff_user_id=${target}&assignment_role=Support`}),{...envConfig,DB:f.DB});
+   assert.equal(r.status,403,`${type} target ${target}`);assert.equal(f.assignments(),before);
+  }
+ }finally{f.sqlite.close();}
+});
+
+test('manager cannot end another team assignment on a shared client/property',async()=>{
+ const f=await assignmentFixture();try{
+  const before=f.assignments();
+  for(const [type,id] of [['client',30],['property',301]]){
+   const r=await worker.fetch(request(`/${type}/${id}/assignment/302/end`,{method:'POST',origin:'https://example.invalid',body:'reason=Synthetic'}),{...envConfig,DB:f.DB});
+   assert.equal(r.status,403,type);assert.equal(f.assignments(),before);
+  }
+ }finally{f.sqlite.close();}
+});
+
+test('manager assignment additions/endings succeed for self and active own-team staff',async()=>{
+ const f=await assignmentFixture();try{
+  for(const [type,id,table,key] of [['client',10,'client_assignments','client_id'],['property',101,'property_assignments','property_id']]){
+   for(const target of [9,11]){
+    const r=await worker.fetch(request(`/${type}/${id}/assign`,{method:'POST',origin:'https://example.invalid',body:`staff_user_id=${target}&assignment_role=Research`}),{...envConfig,DB:f.DB});
+    assert.equal(r.status,303,type+' assign '+target);
+   }
+   const row=f.sqlite.prepare(`SELECT id FROM ${table} WHERE ${key}=? AND staff_user_id=11 AND active=1`).get(id);
+   const r=await worker.fetch(request(`/${type}/${id}/assignment/${row.id}/end`,{method:'POST',origin:'https://example.invalid',body:'reason=Synthetic'}),{...envConfig,DB:f.DB});
+   assert.equal(r.status,303,type+' end');assert.equal(f.sqlite.prepare(`SELECT active FROM ${table} WHERE id=?`).get(row.id).active,0);
+  }
+ }finally{f.sqlite.close();}
+});
+
+test('Administrator and CEO retain cross-team assignment authority',async()=>{
+ const f=await assignmentFixture();try{
+  for(const role of ['Administrator','CEO']){
+   f.sqlite.prepare('UPDATE staff_users SET role=? WHERE id=9').run(role);
+   for(const [type,id] of [['client',10],['property',101]]){
+    const r=await worker.fetch(request(`/${type}/${id}/assign`,{method:'POST',origin:'https://example.invalid',body:'staff_user_id=21&assignment_role=Support'}),{...envConfig,DB:f.DB});assert.equal(r.status,303);
+   }
+  }
+ }finally{f.sqlite.close();}
+});
+
+test('assignment selector query exposes only permitted active staff',async()=>{
+ const f=await assignmentFixture();try{
+  const begin=source.indexOf('async function activeStaffUsers('),end=source.indexOf('async function assignmentScopeForClient(',begin);
+  const getStaff=new Function('workTargetScopeSQL',source.slice(begin,end)+';return activeStaffUsers;')(workTargetScopeSQL);
+  for(const [id,role,expected] of [[9,'Manager',[9,11]],[19,'Manager',[19,21]],[11,'Employee',[11]]]){
+   const rows=await getStaff({DB:f.DB},{id,role,active:1});
+   assert.deepEqual(rows.map(r=>r.id).sort((a,b)=>a-b),expected);
+  }
+  assert.equal((await getStaff({DB:f.DB},{id:9,role:'Administrator',active:1})).length,6);
+ }finally{f.sqlite.close();}
+});
+
+test('recovery HTTP route isolates managers with real team SQL and signed identities',async()=>{
+ const sqlite=new DatabaseSync(':memory:');
+ const DB={prepare(sql){let args=[];return {bind(...a){args=a;return this;},async all(){return {results:sqlite.prepare(sql).all(...args)};},async first(){return sqlite.prepare(sql).get(...args)||null;},async run(){const r=sqlite.prepare(sql).run(...args);return {success:true,meta:{changes:Number(r.changes),last_row_id:Number(r.lastInsertRowid)}};}};},async batch(stmts){sqlite.exec('BEGIN');try{const out=[];for(const stmt of stmts)out.push(await stmt.run());sqlite.exec('COMMIT');return out;}catch(e){sqlite.exec('ROLLBACK');throw e;}}};
+ const start=source.indexOf('async function ensureClientSchema(env) {');
+ const end=source.indexOf('async function ensureClientForInquiry(',start);
+ const ensure=new Function('let clientSchemaReady=false;'+source.slice(start,end)+';return ensureClientSchema;')();
+ await ensure({DB});
+ sqlite.exec(`
+ CREATE TABLE inquiries(id INTEGER PRIMARY KEY,first_name TEXT,last_name TEXT,county TEXT,property_location TEXT);
+ CREATE TABLE compliance_rules(rule_key TEXT,rule_value TEXT);
+ CREATE TABLE intake_recovery_queue(inquiry_id INTEGER PRIMARY KEY,status TEXT,attempts INTEGER,last_error TEXT,updated_at TEXT);
+ INSERT INTO staff_users(id,email,role,active) VALUES
+ (9,'owner@example.invalid','Manager',1),(19,'second@example.invalid','Manager',1),
+ (11,'a@example.invalid','Employee',1),(21,'b@example.invalid','Employee',1),
+ (12,'ended@example.invalid','Employee',1),(13,'inactive-team@example.invalid','Employee',1);
+ INSERT INTO staff_teams(id,name,manager_staff_user_id,active) VALUES(1,'A',9,1),(2,'B',19,1),(3,'Inactive',9,0);
+ INSERT INTO staff_team_members(team_id,staff_user_id,active) VALUES(1,11,1),(2,21,1),(1,12,0),(3,13,1);
+ `);
+ const fixtures=[
+  [1,'TeamA',11,'a@example.invalid'],[2,'TeamB',21,'b@example.invalid'],
+  [3,'OwnManager',9,'owner@example.invalid'],[4,'Unassigned',null,''],
+  [5,'EndedMember',12,'ended@example.invalid'],[6,'InactiveTeam',13,'inactive-team@example.invalid'],
+  [7,'LegacyEmail',null,'A@EXAMPLE.INVALID'],[8,'ConflictingEmail',21,'a@example.invalid'],
+  [9,'LatestOtherTeam',21,'b@example.invalid'],[10,'NoWorkItem',null,'']
+ ];
+ for(const [id,label,assignee,email] of fixtures){
+  sqlite.prepare('INSERT INTO inquiries VALUES(?,?,?,?,?)').run(id,label+'Client','Synthetic',label+'County',label+'Parcel');
+  sqlite.prepare('INSERT INTO intake_recovery_queue VALUES(?,?,?,?,?)').run(id,'Retry Pending',1,label+'Error','2026-10-01');
+  if(id!==10)sqlite.prepare("INSERT INTO flt_work_items(id,work_type,title,subject_type,subject_id,assigned_staff_user_id,assigned_staff_email,status) VALUES(?,'Intake Recovery',?,'inquiry',?,?,?,'Assigned')").run(id,label,id,assignee,email);
+ }
+ // An earlier assignment must not expose a recovery item now owned by another team.
+ sqlite.prepare("INSERT INTO flt_work_items(id,work_type,title,subject_type,subject_id,assigned_staff_user_id,status) VALUES(0,'Intake Recovery','Old assignment','inquiry',9,11,'Completed')").run();
+ const snapshot=()=>JSON.stringify(['inquiries','intake_recovery_queue','flt_work_items','staff_teams','staff_team_members'].map(table=>sqlite.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()));
+ const before=snapshot();
+ try{
+  for(const [email,visible] of [['owner@example.invalid',[1,3,7]],['second@example.invalid',[2,8,9]]]){
+   const r=await worker.fetch(request('/intake-recovery',{jwt:await token({email})}),{...envConfig,DB});
+   assert.equal(r.status,200);assert.equal(r.headers.get('cache-control'),'no-store');
+   const html=await r.text();
+   for(const [id,label] of fixtures){
+    for(const suffix of ['Client','County','Parcel','Error'])assert.equal(html.includes(label+suffix),visible.includes(id),email+' '+label+suffix);
+    assert.equal(html.includes(`/work-routing/${id}\"`),visible.includes(id),email+' task '+id);
+   }
+  }
+  for(const role of ['Administrator','CEO']){
+   sqlite.prepare('UPDATE staff_users SET role=? WHERE id=9').run(role);
+   const r=await worker.fetch(request('/intake-recovery'),{...envConfig,DB});assert.equal(r.status,200);
+   const html=await r.text();for(const [,label] of fixtures)assert.ok(html.includes(label+'Client'),role+' '+label);
+  }
+  assert.equal(snapshot(),before,'recovery reads must not change business records');
+ }finally{sqlite.close();}
 });
