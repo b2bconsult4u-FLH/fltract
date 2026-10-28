@@ -68,7 +68,9 @@ export const PRIVATE_ROUTES = [
   ['GET', /^\/work-routing\/(\d+)(?:\/history)?$/, 'admin_access', 'work'],
   ['POST', /^\/work-routing\/(\d+)\/progress$/, 'admin_access', 'work'],
   ['POST', /^\/work-routing\/(\d+)\/(?:deadline|redirect)$/, 'manage_assignments', 'work'],
-  ['POST', /^\/work-routing\/(?:run|check-deadlines)$/, 'manage_assignments'],
+  // These handlers process work across all teams; a manager's record scope
+  // must not grant permission to invoke business-wide routing or escalation.
+  ['POST', /^\/work-routing\/(?:run|check-deadlines)$/, 'manage_assignments', 'global'],
   ['GET', /^\/training$/, 'admin_access'],
   ['POST', /^\/training\/start$/, 'admin_access'],
   ['GET', /^\/training\/manage$/, 'manage_assignments'],

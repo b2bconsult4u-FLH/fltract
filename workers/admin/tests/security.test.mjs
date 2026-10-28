@@ -50,6 +50,27 @@ function fakeDB({role='Administrator',active=1,unknown=false,scope=false,auditFa
  };}}
 }
 function businessWrites(DB){return DB.calls.filter(c=>c.kind==='write'&&!c.sql.includes('staff_access_log'));}
+for (const path of ['/work-routing/run','/work-routing/check-deadlines']) {
+ test(`Manager cannot invoke global operation ${path}`,async()=>{
+  const DB=fakeDB({role:'Manager'});
+  const response=await worker.fetch(request(path,{method:'POST',origin:'https://example.invalid'}),{...envConfig,DB});
+  assert.equal(response.status,403);
+  assert.equal(businessWrites(DB).length,0);
+  assert.ok(!DB.calls.some(c=>c.kind==='schema-batch'));
+  assert.ok(!DB.calls.some(c=>/flt_work_items|mini_comp_queue/.test(c.sql||'')),'denied request must not inspect global work');
+  assert.ok(DB.calls.some(c=>c.sql?.includes('INSERT INTO staff_access_log')&&c.args.includes('Denied')));
+ });
+ for (const role of ['Administrator','CEO']) test(`${role} retains global operation ${path}`,async()=>{
+  const decision=await routeAuthorized({}, {user:{id:9,role,active:1}},request(path,{method:'POST',origin:'https://example.invalid'}),{staffCan});
+  assert.equal(decision.allowed,true);
+ });
+}
+for (const role of ['Manager','Administrator','CEO']) test(`${role} global routing controls match authorization`,async()=>{
+ const response=await worker.fetch(request('/work-routing'),{...envConfig,DB:fakeDB({role})});
+ assert.equal(response.status,200);
+ const html=await response.text();
+ for(const path of ['/work-routing/run','/work-routing/check-deadlines']) assert.equal(html.includes(`action="${path}"`),role!=='Manager');
+});
 const paths=['/','/clients','/followups','/my-work','/export.csv','/security-audit','/intake-recovery','/inquiry/1','/inquiry/1/status','/client/1','/property/1','/property/1/update','/library/item/1','/library/version/1','/work-routing','/training','/sops','/integrity','/dry-run'];
 for(const path of paths)test(`anonymous/spoofed identity rejected before DB: ${path}`,async()=>{
  const DB=fakeDB();for(const jwt of [null,'invalid']){
