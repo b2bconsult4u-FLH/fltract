@@ -176,6 +176,23 @@ export async function routeAuthorized(env, staff, request, checks) {
     const row = await env.DB.prepare(sql).bind(rule.id).first();
     if (!row || !await checks.staffHasPropertyScope(env,staff.user,row.property_id)) return deny;
   }
+  const assignment=/^\/(client|property)\/(\d+)\/(assign|assignment\/(\d+)\/end)$/.exec(new URL(request.url).pathname);
+  if (request.method==='POST' && assignment) {
+    let target;
+    if (assignment[3]==='assign') {
+      target=Number((await request.clone().formData()).get('staff_user_id'));
+    } else {
+      const table=assignment[1]==='client'?'client_assignments':'property_assignments';
+      const key=assignment[1]==='client'?'client_id':'property_id';
+      const row=await env.DB.prepare(`SELECT staff_user_id FROM ${table}
+        WHERE id=? AND ${key}=? AND active=1 LIMIT 1`).bind(Number(assignment[4]),rule.id).first();
+      target=Number(row?.staff_user_id);
+    }
+    if (!Number.isSafeInteger(target) || target<=0) return deny;
+    const row=await env.DB.prepare(`SELECT 1 AS ok FROM staff_users target
+      WHERE target.id=? AND target.active=1 AND ${workTargetScopeSQL(staff.user,'target.id')} LIMIT 1`).bind(target).first();
+    if (row?.ok!==1) return deny;
+  }
   if (rule.scope === 'work') {
     if (!await workRecordAuthorized(env,staff.user,rule.id)) return deny;
     if (/\/redirect$/.test(new URL(request.url).pathname)) {

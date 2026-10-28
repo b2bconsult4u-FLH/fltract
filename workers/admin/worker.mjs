@@ -1346,11 +1346,11 @@ function staffCan(user, capability) {
   return Boolean(matrix[role]?.has(capability));
 }
 
-async function activeStaffUsers(env) {
+async function activeStaffUsers(env, user) {
   const result = await env.DB.prepare(`
     SELECT id, email, display_name, role
-    FROM staff_users
-    WHERE active = 1
+    FROM staff_users target
+    WHERE active = 1 AND ${workTargetScopeSQL(user,"target.id")}
     ORDER BY display_name ASC, email ASC
   `).all();
   return result.results || [];
@@ -5669,7 +5669,7 @@ request.method === "POST" &&
   const allowed = ["Primary","Support","Research"];
 
   const target = await env.DB.prepare(`
-    SELECT id, email FROM staff_users WHERE id = ? AND active = 1 LIMIT 1
+    SELECT id, email FROM staff_users target WHERE id = ? AND active = 1 AND ${workTargetScopeSQL(staff.user,"target.id")} LIMIT 1
   `).bind(staffUserId).first();
 
   const client = await env.DB.prepare(`
@@ -5721,7 +5721,7 @@ request.method === "POST" &&
     SELECT ca.*, su.email
     FROM client_assignments ca
     JOIN staff_users su ON su.id = ca.staff_user_id
-    WHERE ca.id = ? AND ca.client_id = ? AND ca.active = 1
+    WHERE ca.id = ? AND ca.client_id = ? AND ca.active = 1 AND ${workTargetScopeSQL(staff.user,"su.id")}
     LIMIT 1
   `).bind(assignmentId, clientId).first();
 
@@ -5759,7 +5759,7 @@ request.method === "POST" &&
   const allowed = ["Primary","Support","Research"];
 
   const target = await env.DB.prepare(`
-    SELECT id, email FROM staff_users WHERE id = ? AND active = 1 LIMIT 1
+    SELECT id, email FROM staff_users target WHERE id = ? AND active = 1 AND ${workTargetScopeSQL(staff.user,"target.id")} LIMIT 1
   `).bind(staffUserId).first();
 
   const property = await env.DB.prepare(`
@@ -5811,7 +5811,7 @@ request.method === "POST" &&
     SELECT pa.*, su.email
     FROM property_assignments pa
     JOIN staff_users su ON su.id = pa.staff_user_id
-    WHERE pa.id = ? AND pa.property_id = ? AND pa.active = 1
+    WHERE pa.id = ? AND pa.property_id = ? AND pa.active = 1 AND ${workTargetScopeSQL(staff.user,"su.id")}
     LIMIT 1
   `).bind(assignmentId, propertyId).first();
 
@@ -6227,7 +6227,7 @@ LIMIT 100
 .all();
 
 const clientAssignments = await assignmentScopeForClient(env, clientId);
-const assignableStaff = await activeStaffUsers(env);
+const assignableStaff = await activeStaffUsers(env, staff.user);
 
 const assignmentRows = clientAssignments.length
 ? clientAssignments.map(a => `
@@ -6237,7 +6237,7 @@ const assignmentRows = clientAssignments.length
     <td>${esc(a.assignment_role)}</td>
     <td>${esc(floridaTime(a.assigned_at))}</td>
     <td>
-      ${staff.authenticated && staffCan(staff.user, "manage_assignments") ? `
+      ${staff.authenticated && staffCan(staff.user, "manage_assignments") && assignableStaff.some(u=>u.id===a.staff_user_id) ? `
       <form method="post" action="/client/${clientId}/assignment/${a.assignment_id}/end">
         <input name="reason" maxlength="500" placeholder="Reason for reassignment / unassignment" required>
         <button type="submit">End Assignment</button>
@@ -7691,7 +7691,7 @@ request.method === "GET" &&
   `).bind(propertyId).all();
 
   const propertyAssignments = await assignmentScopeForProperty(env, propertyId);
-  const propertyAssignableStaff = await activeStaffUsers(env);
+  const propertyAssignableStaff = await activeStaffUsers(env, staff.user);
 
   const propertyAssignmentRows = propertyAssignments.length
     ? propertyAssignments.map(a => `
@@ -7701,7 +7701,7 @@ request.method === "GET" &&
         <td>${esc(a.assignment_role)}</td>
         <td>${esc(floridaTime(a.assigned_at))}</td>
         <td>
-          ${staff.authenticated && staffCan(staff.user, "manage_assignments") ? `
+          ${staff.authenticated && staffCan(staff.user, "manage_assignments") && propertyAssignableStaff.some(u=>u.id===a.staff_user_id) ? `
           <form method="post" action="/property/${propertyId}/assignment/${a.assignment_id}/end">
             <input name="reason" maxlength="500" placeholder="Reason for reassignment / unassignment" required>
             <button type="submit">End Assignment</button>

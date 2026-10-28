@@ -4,7 +4,7 @@ import {readFileSync} from 'node:fs';
 import {DatabaseSync} from 'node:sqlite';
 import {generateKeyPair,exportJWK,SignJWT,createLocalJWKSet} from 'jose';
 import worker from '../worker.mjs';
-import {verifiedAccessIdentity,sameOriginWrite,PRIVATE_ROUTES,privateRoute,routeAuthorized,clientScopeSQL,inquiryScopeSQL} from '../security.mjs';
+import {verifiedAccessIdentity,sameOriginWrite,PRIVATE_ROUTES,privateRoute,routeAuthorized,clientScopeSQL,inquiryScopeSQL,workTargetScopeSQL} from '../security.mjs';
 const source=readFileSync(new URL('../worker.mjs',import.meta.url),'utf8');
 function productionFunctions(start,end,names){
  return new Function(source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start)))+';return {'+names+'};')();
@@ -346,5 +346,74 @@ test('deadline write rechecks team scope after a concurrent reassignment',async(
   const item=f.sqlite.prepare('SELECT * FROM flt_work_items WHERE id=1').get();
   assert.equal(item.assigned_staff_user_id,21);assert.equal(item.due_at,null);
   assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM flt_work_routing_events').get().n,0);
+ }finally{f.sqlite.close();}
+});
+
+async function assignmentFixture() {
+ const f=await teamWorkFixture();
+ f.sqlite.exec(`
+ INSERT INTO clients(id,normalized_email,first_name) VALUES(10,'client-a@example.invalid','A'),(20,'client-b@example.invalid','B'),(30,'shared@example.invalid','Shared');
+ INSERT INTO properties(id,client_id,property_location) VALUES(101,10,'Synthetic A'),(201,20,'Synthetic B'),(301,30,'Synthetic Shared');
+ INSERT INTO client_assignments(id,client_id,staff_user_id,active) VALUES(101,10,11,1),(201,20,21,1),(301,30,11,1),(302,30,21,1);
+ INSERT INTO property_assignments(id,property_id,staff_user_id,active) VALUES(101,101,11,1),(201,201,21,1),(301,301,11,1),(302,301,21,1);
+ `);
+ f.assignments=()=>JSON.stringify(['client_assignments','property_assignments'].map(t=>f.sqlite.prepare(`SELECT * FROM ${t} ORDER BY id`).all()));
+ return f;
+}
+
+test('manager cannot assign client/property records to other-team or inactive staff',async()=>{
+ const f=await assignmentFixture();try{
+  const before=f.assignments();
+  for(const [type,id] of [['client',10],['property',101]])for(const target of [21,19,12,13,14,999]){
+   const r=await worker.fetch(request(`/${type}/${id}/assign`,{method:'POST',origin:'https://example.invalid',body:`staff_user_id=${target}&assignment_role=Support`}),{...envConfig,DB:f.DB});
+   assert.equal(r.status,403,`${type} target ${target}`);assert.equal(f.assignments(),before);
+  }
+ }finally{f.sqlite.close();}
+});
+
+test('manager cannot end another team assignment on a shared client/property',async()=>{
+ const f=await assignmentFixture();try{
+  const before=f.assignments();
+  for(const [type,id] of [['client',30],['property',301]]){
+   const r=await worker.fetch(request(`/${type}/${id}/assignment/302/end`,{method:'POST',origin:'https://example.invalid',body:'reason=Synthetic'}),{...envConfig,DB:f.DB});
+   assert.equal(r.status,403,type);assert.equal(f.assignments(),before);
+  }
+ }finally{f.sqlite.close();}
+});
+
+test('manager assignment additions/endings succeed for self and active own-team staff',async()=>{
+ const f=await assignmentFixture();try{
+  for(const [type,id,table,key] of [['client',10,'client_assignments','client_id'],['property',101,'property_assignments','property_id']]){
+   for(const target of [9,11]){
+    const r=await worker.fetch(request(`/${type}/${id}/assign`,{method:'POST',origin:'https://example.invalid',body:`staff_user_id=${target}&assignment_role=Research`}),{...envConfig,DB:f.DB});
+    assert.equal(r.status,303,type+' assign '+target);
+   }
+   const row=f.sqlite.prepare(`SELECT id FROM ${table} WHERE ${key}=? AND staff_user_id=11 AND active=1`).get(id);
+   const r=await worker.fetch(request(`/${type}/${id}/assignment/${row.id}/end`,{method:'POST',origin:'https://example.invalid',body:'reason=Synthetic'}),{...envConfig,DB:f.DB});
+   assert.equal(r.status,303,type+' end');assert.equal(f.sqlite.prepare(`SELECT active FROM ${table} WHERE id=?`).get(row.id).active,0);
+  }
+ }finally{f.sqlite.close();}
+});
+
+test('Administrator and CEO retain cross-team assignment authority',async()=>{
+ const f=await assignmentFixture();try{
+  for(const role of ['Administrator','CEO']){
+   f.sqlite.prepare('UPDATE staff_users SET role=? WHERE id=9').run(role);
+   for(const [type,id] of [['client',10],['property',101]]){
+    const r=await worker.fetch(request(`/${type}/${id}/assign`,{method:'POST',origin:'https://example.invalid',body:'staff_user_id=21&assignment_role=Support'}),{...envConfig,DB:f.DB});assert.equal(r.status,303);
+   }
+  }
+ }finally{f.sqlite.close();}
+});
+
+test('assignment selector query exposes only permitted active staff',async()=>{
+ const f=await assignmentFixture();try{
+  const begin=source.indexOf('async function activeStaffUsers('),end=source.indexOf('async function assignmentScopeForClient(',begin);
+  const getStaff=new Function('workTargetScopeSQL',source.slice(begin,end)+';return activeStaffUsers;')(workTargetScopeSQL);
+  for(const [id,role,expected] of [[9,'Manager',[9,11]],[19,'Manager',[19,21]],[11,'Employee',[11]]]){
+   const rows=await getStaff({DB:f.DB},{id,role,active:1});
+   assert.deepEqual(rows.map(r=>r.id).sort((a,b)=>a-b),expected);
+  }
+  assert.equal((await getStaff({DB:f.DB},{id:9,role:'Administrator',active:1})).length,6);
  }finally{f.sqlite.close();}
 });
