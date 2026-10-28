@@ -120,6 +120,38 @@ export function inquiryScopeSQL(user, idExpression) {
   return `EXISTS (SELECT 1 FROM client_inquiries sci WHERE sci.inquiry_id=${idExpression} AND ${clientScopeSQL(user,'sci.client_id')})`;
 }
 
+// IDs are registered staff IDs; aliases/expressions are fixed by callers.
+export function workTargetScopeSQL(user, idExpression) {
+  if (broadRecords(user)) return '1=1';
+  const id = Number(user?.id);
+  if (!user?.active || !Number.isSafeInteger(id) || id <= 0) return '0=1';
+  const team = user.role === 'Manager' ? ` OR EXISTS (
+    SELECT 1 FROM staff_teams wt
+    JOIN staff_team_members wm ON wm.team_id=wt.id AND wm.active=1
+    JOIN staff_users wu ON wu.id=wm.staff_user_id AND wu.active=1
+    WHERE wt.active=1 AND wt.manager_staff_user_id=${id} AND wu.id=${idExpression}
+  )` : '';
+  return `(${idExpression}=${id}${team})`;
+}
+
+export function workScopeSQL(user, alias='w') {
+  if (broadRecords(user)) return '1=1';
+  const id = Number(user?.id);
+  if (!user?.active || !Number.isSafeInteger(id) || id <= 0) return '0=1';
+  // A populated assignee ID wins over a stale or conflicting legacy email.
+  return `EXISTS (SELECT 1 FROM staff_users wa WHERE wa.active=1
+    AND (${alias}.assigned_staff_user_id=wa.id
+      OR (${alias}.assigned_staff_user_id IS NULL AND lower(${alias}.assigned_staff_email)=lower(wa.email)))
+    AND ${workTargetScopeSQL(user,'wa.id')})`;
+}
+
+export async function workRecordAuthorized(env, user, id) {
+  if (!Number.isSafeInteger(Number(id)) || Number(id)<=0) return false;
+  const row=await env.DB.prepare(`SELECT 1 AS ok FROM flt_work_items w
+    WHERE w.id=? AND ${workScopeSQL(user)} LIMIT 1`).bind(Number(id)).first();
+  return row?.ok===1;
+}
+
 export async function routeAuthorized(env, staff, request, checks) {
   const rule = privateRoute(request);
   if (!rule) return {allowed:false,status:404,reason:'Unknown private route or method.'};
@@ -145,8 +177,15 @@ export async function routeAuthorized(env, staff, request, checks) {
     if (!row || !await checks.staffHasPropertyScope(env,staff.user,row.property_id)) return deny;
   }
   if (rule.scope === 'work') {
-    const item = await env.DB.prepare('SELECT id,assigned_staff_user_id,assigned_staff_email FROM flt_work_items WHERE id=? LIMIT 1').bind(rule.id).first();
-    if (!item || !checks.canActOnWork(staff,item)) return deny;
+    if (!await workRecordAuthorized(env,staff.user,rule.id)) return deny;
+    if (/\/redirect$/.test(new URL(request.url).pathname)) {
+      const form=await request.clone().formData();
+      const target=Number(form.get('target_staff_id'));
+      if (!Number.isSafeInteger(target) || target<=0) return deny;
+      const row=await env.DB.prepare(`SELECT 1 AS ok FROM staff_users target
+        WHERE target.id=? AND target.active=1 AND ${workTargetScopeSQL(staff.user,'target.id')} LIMIT 1`).bind(target).first();
+      if (row?.ok!==1) return deny;
+    }
   }
   return {allowed:true,rule};
 }

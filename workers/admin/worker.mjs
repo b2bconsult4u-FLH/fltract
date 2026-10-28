@@ -1,5 +1,5 @@
 import {processMiniCompQueue, ensureResearchQueueSchema, MINI_COMP_ADAPTERS} from "./mini-comp-research.mjs";
-import {verifiedAccessIdentity, sameOriginWrite, routeAuthorized, securityAudit, securityResponse, broadRecords, clientScopeSQL, inquiryScopeSQL} from "./security.mjs";
+import {verifiedAccessIdentity, sameOriginWrite, routeAuthorized, securityAudit, securityResponse, broadRecords, clientScopeSQL, inquiryScopeSQL, workScopeSQL, workTargetScopeSQL, workRecordAuthorized} from "./security.mjs";
 
 const STATUSES = [
   "New",
@@ -1346,14 +1346,6 @@ function staffCan(user, capability) {
   return Boolean(matrix[role]?.has(capability));
 }
 
-function privateWorkAuthorized(staff, item) {
-  if (!staff?.user?.active) return false;
-  if (staffCan(staff.user,"manage_assignments")) return true;
-  return item.assigned_staff_user_id != null
-    ? Number(item.assigned_staff_user_id) === Number(staff.user.id)
-    : !!item.assigned_staff_email && String(item.assigned_staff_email).toLowerCase() === staff.email;
-}
-
 async function activeStaffUsers(env) {
   const result = await env.DB.prepare(`
     SELECT id, email, display_name, role
@@ -2287,12 +2279,9 @@ async function routeQueuedWork(env, performedBy="FLTract Router") {
   return {assigned,held};
 }
 
-function canActOnWork(staff, item) {
-  if(!staff?.authenticated || !staff?.user?.active) return false;
-  if(trainingManagerAuthorized(staff)) return true;
-  return item.assigned_staff_user_id != null
-    ? Number(item.assigned_staff_user_id) === Number(staff.user.id)
-    : !!item.assigned_staff_email && String(item.assigned_staff_email).toLowerCase() === String(staff.email||"").toLowerCase();
+async function canAccessWorkRecord(env, staff, item) {
+  return !!staff?.authenticated && !!staff?.user?.active && !!item
+    && await workRecordAuthorized(env,staff.user,item.id);
 }
 
 async function completeMiniCompResearchWork(env, reportId, reportStatus, performedBy) {
@@ -2348,7 +2337,8 @@ async function workHistoryPage(env, item) {
 
 
 async function workTaskPage(env, staff, item) {
-  const activeStaff=await env.DB.prepare("SELECT id,email,role FROM staff_users WHERE active=1 ORDER BY email").all();
+  const workAllowed=await canAccessWorkRecord(env,staff,item);
+  const activeStaff=await env.DB.prepare(`SELECT id,email,role FROM staff_users target WHERE active=1 AND ${workTargetScopeSQL(staff.user,"target.id")} ORDER BY email`).all();
   const staffOptions=activeStaff.results.map(u=>`<option value="${Number(u.id)}">${esc(u.email||("Staff #"+u.id))} — ${esc(u.role||"Employee")}</option>`).join("");
   return page(`<h1>Task #${Number(item.id)}</h1><p><a class="nav-button" href="/work-routing">← Work Queue</a></p>
     <div class="panel"><h2>${esc(item.title||item.work_type)}</h2>
@@ -2356,13 +2346,13 @@ async function workTaskPage(env, staff, item) {
       <p><strong>Module:</strong> ${esc(item.module_key)} · <strong>Priority:</strong> ${esc(item.priority)} · <strong>Requirements:</strong> ${esc(item.required_role)} / ${esc(item.required_competency||"None")}</p>
       <p><strong>Due:</strong> ${esc(workDeadlineDisplay(item.due_at))}<br><strong>Warning:</strong> ${esc(workDeadlineDisplay(item.warning_at))}</p>
             <div class="task-navigation">
-        ${canActOnWork(staff,item)?`<a class="nav-button" href="/work-routing/${item.id}/history">Task History</a>`:""}
+        ${workAllowed?`<a class="nav-button" href="/work-routing/${item.id}/history">Task History</a>`:""}
         ${Number(item.routing_property_id)>0?`<a class="nav-button" href="/property/${Number(item.routing_property_id)}">Property Research</a><a class="nav-button" href="/property/${Number(item.routing_property_id)}/mini-comp">Mini-Comp Workspace</a>`:""}
       </div>
       <details class="task-controls" open><summary>Task details and controls</summary>
         <p class="small"><strong>Routing reason:</strong> ${esc(item.routing_reason||"None recorded")}</p>
         <div class="task-control-grid">
-          <div>    ${canActOnWork(staff,item)&&["Assigned","In Progress","Deadline Warning","Overdue"].includes(item.status)?`
+          <div>    ${workAllowed&&["Assigned","In Progress","Deadline Warning","Overdue"].includes(item.status)?`
       <form method="post" action="/work-routing/${item.id}/progress" style="margin-top:8px">
         <input type="hidden" name="action" value="${item.status==="Assigned"?"start":"note"}">
         <input name="note" maxlength="2000" placeholder="Progress note" ${item.status!=="Assigned"?"required":""}>
@@ -2397,10 +2387,8 @@ async function workRoutingPage(env, staff, notice="", params=new URLSearchParams
   const filters=[...statuses,...Object.keys(groups)];
   const selected=filters.includes(params.get("status"))?params.get("status"):"";
   const args=groups[selected]|| (selected?[selected]:[]);
-  const workScope=trainingManagerAuthorized(staff)?"1=1":`(w.assigned_staff_user_id=? OR (w.assigned_staff_user_id IS NULL AND LOWER(w.assigned_staff_email)=?))`;
-  const scopeArgs=trainingManagerAuthorized(staff)?[]:[staff.user.id,staff.email];
+  const workScope=workScopeSQL(staff.user);
   const where=`WHERE ${workScope}`+(args.length?` AND w.status IN (${args.map(()=>"?").join(",")})`:"");
-  args.unshift(...scopeArgs);
   const matched=await env.DB.prepare(`SELECT COUNT(*) total FROM flt_work_items w ${where}`).bind(...args).first();
   const total=Number(matched?.total||0), pages=Math.max(1,Math.ceil(total/25));
   const current=Math.max(1,Math.min(pages,Number.parseInt(params.get("page"),10)||1));
@@ -2418,7 +2406,7 @@ async function workRoutingPage(env, staff, notice="", params=new URLSearchParams
       SUM(CASE WHEN status IN ('Escalated','Escalation Required') THEN 1 ELSE 0 END) escalated,
       SUM(CASE WHEN status IN ('Deadline Warning','Overdue') THEN 1 ELSE 0 END) deadline_risk
     FROM flt_work_items w WHERE ${workScope}
-  `).bind(...scopeArgs).first();
+  `).first();
   const rows=items.results.length?items.results.map(w=>`<tr class="work-summary">
     <td>#${Number(w.id)}</td>
     <td><strong>${esc(w.title||w.work_type)}</strong><div class="small">${esc(w.module_key)}</div></td>
@@ -2426,7 +2414,7 @@ async function workRoutingPage(env, staff, notice="", params=new URLSearchParams
     <td>${esc(w.assigned_staff_email||"Unassigned")}</td>
     <td><span class="badge ${w.status==="Overdue"?"danger overdue":w.status==="Deadline Warning"?"warning":w.status==="Assigned"?"good":"muted"}">${esc(w.status)}</span></td>
     <td class="small"><strong>Due:</strong> ${esc(workDeadlineDisplay(w.due_at))}<br><strong>Warning:</strong> ${esc(workDeadlineDisplay(w.warning_at))}</td>
-    <td>${canActOnWork(staff,w)?`<a class="nav-button" style="white-space:nowrap" href="/work-routing/${Number(w.id)}">Open Task</a>`:'<span class="small">Manager / assignee access</span>'}</td>
+    <td><a class="nav-button" style="white-space:nowrap" href="/work-routing/${Number(w.id)}">Open Task</a></td>
     </tr>`).join(""):'<tr><td colspan="7" class="empty">No tasks match this filter.</td></tr>';
   return page(`<h1>Universal Work Routing</h1>
     ${notice?`<div class="panel" role="status">${esc(notice)}</div>`:""}
@@ -2445,8 +2433,9 @@ async function managerRedirectWork(env, workItemId, targetStaffId, reason, staff
   if(!trainingManagerAuthorized(staff)) throw new Error("Manager authorization required.");
   const item=await env.DB.prepare(`SELECT * FROM flt_work_items WHERE id=? LIMIT 1`).bind(workItemId).first();
   if(!item) throw new Error("Work item not found.");
+  if(!(await canAccessWorkRecord(env,staff,item))) throw new Error("Work item outside managed scope.");
   if(!["Escalated","Escalation Required","Assigned","Deadline Warning","Overdue"].includes(item.status)) throw new Error("This work item is not eligible for manager redirect.");
-  const target=await env.DB.prepare(`SELECT * FROM staff_users WHERE id=? AND active=1 LIMIT 1`).bind(targetStaffId).first();
+  const target=await env.DB.prepare(`SELECT * FROM staff_users target WHERE id=? AND active=1 AND ${workTargetScopeSQL(staff.user,"target.id")} LIMIT 1`).bind(targetStaffId).first();
   if(!target) throw new Error("Target employee is not active or does not exist.");
 
   const roleEligible=roleCanReceiveWork(target.role,item.required_role);
@@ -2458,10 +2447,15 @@ async function managerRedirectWork(env, workItemId, targetStaffId, reason, staff
     ? `MANAGER OVERRIDE — normal routing requirements not fully satisfied. ${managerReason}`
     : `Manager redirect. ${managerReason}`;
 
-  await env.DB.prepare(`
+  const moved=await env.DB.prepare(`
     UPDATE flt_work_items SET status='Assigned',assigned_staff_user_id=?,assigned_staff_email=?,
-      routing_reason=?,assigned_at=CURRENT_TIMESTAMP WHERE id=?
-  `).bind(target.id,target.email||"",auditReason,item.id).run();
+      routing_reason=?,assigned_at=CURRENT_TIMESTAMP
+    WHERE id=? AND assigned_staff_user_id IS ? AND assigned_staff_email=? AND status=?
+      AND ${workScopeSQL(staff.user,"flt_work_items")}
+      AND EXISTS (SELECT 1 FROM staff_users target WHERE target.id=? AND target.active=1
+        AND ${workTargetScopeSQL(staff.user,"target.id")})
+  `).bind(target.id,target.email||"",auditReason,item.id,item.assigned_staff_user_id,item.assigned_staff_email,item.status,target.id).run();
+  if(!moved.meta?.changes) throw new Error("Work assignment or team access changed. Refresh Work Routing.");
   await env.DB.prepare(`
     INSERT INTO flt_work_routing_events(
       work_item_id,event_type,from_staff_email,to_staff_email,reason,performed_by
@@ -3606,7 +3600,7 @@ if(request.method==="GET" && /^\/work-routing\/\d+\/history$/.test(url.pathname)
   if(!staff?.authenticated || !staff?.user?.active) return await denyAndAudit(env,staff,request,"View Work History");
   const item=await env.DB.prepare("SELECT * FROM flt_work_items WHERE id=?").bind(Number(url.pathname.split("/")[2])).first();
   if(!item) return new Response("Work item not found.",{status:404});
-  if(!canActOnWork(staff,item)) return await denyAndAudit(env,staff,request,"View Work History");
+  if(!(await canAccessWorkRecord(env,staff,item))) return await denyAndAudit(env,staff,request,"View Work History");
   return new Response(await workHistoryPage(env,item),{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"}});
 }
 
@@ -3618,7 +3612,7 @@ if(request.method==="GET" && /^\/work-routing\/\d+$/.test(url.pathname)){
     LEFT JOIN mini_comp_reports r ON w.subject_type='mini_comp_reports' AND w.subject_id=r.id WHERE w.id=?`)
     .bind(Number(url.pathname.split("/")[2])).first();
   if(!item) return new Response("Work item not found.",{status:404});
-  if(!canActOnWork(staff,item)) return await denyAndAudit(env,staff,request,"View Work Task");
+  if(!(await canAccessWorkRecord(env,staff,item))) return await denyAndAudit(env,staff,request,"View Work Task");
   return new Response(await workTaskPage(env,staff,item),{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff","referrer-policy":"no-referrer"}});
 }
 
@@ -3634,7 +3628,7 @@ if(request.method==="POST" && /^\/work-routing\/\d+\/progress$/.test(url.pathnam
   if(!sameOriginPost(request)) return new Response("Invalid request origin.",{status:403});
   const item=await env.DB.prepare("SELECT * FROM flt_work_items WHERE id=?").bind(Number(url.pathname.split("/")[2])).first();
   if(!item) return new Response("Work item not found.",{status:404});
-  if(!canActOnWork(staff,item)) return await denyAndAudit(env,staff,request,"Update Work Progress");
+  if(!(await canAccessWorkRecord(env,staff,item))) return await denyAndAudit(env,staff,request,"Update Work Progress");
   const form=await request.formData();
   const action=String(form.get("action")||"");
   const note=String(form.get("note")||"").trim().slice(0,2000);
@@ -3643,9 +3637,9 @@ if(request.method==="POST" && /^\/work-routing\/\d+\/progress$/.test(url.pathnam
   if(action==="note" && !note) return new Response("A progress note is required.",{status:400});
   await env.DB.batch([
     env.DB.prepare(`INSERT INTO flt_work_routing_events(work_item_id,event_type,from_staff_email,reason,performed_by)
-      SELECT id,?,assigned_staff_email,?,? FROM flt_work_items WHERE id=? AND status=? AND assigned_staff_user_id IS ? AND assigned_staff_email=?`)
+      SELECT id,?,assigned_staff_email,?,? FROM flt_work_items WHERE id=? AND status=? AND assigned_staff_user_id IS ? AND assigned_staff_email=? AND ${workScopeSQL(staff.user,"flt_work_items")}`)
       .bind(action==="start"?"Started":"Progress Note",note||"Assigned work started.",staff.email||"Authorized Staff",item.id,item.status,item.assigned_staff_user_id,item.assigned_staff_email),
-    env.DB.prepare(`UPDATE flt_work_items SET status=? WHERE id=? AND status=? AND assigned_staff_user_id IS ? AND assigned_staff_email=?`)
+    env.DB.prepare(`UPDATE flt_work_items SET status=? WHERE id=? AND status=? AND assigned_staff_user_id IS ? AND assigned_staff_email=? AND ${workScopeSQL(staff.user,"flt_work_items")}`)
       .bind(action==="start"?"In Progress":item.status,item.id,item.status,item.assigned_staff_user_id,item.assigned_staff_email)
   ]);
   return redirect("/work-routing?completed=progress");
@@ -3657,6 +3651,7 @@ if(request.method==="POST" && /^\/work-routing\/\d+\/deadline$/.test(url.pathnam
   if(!trainingManagerAuthorized(staff)) return await denyAndAudit(env,staff,request,"Set Work Deadline");
   const item=await env.DB.prepare("SELECT * FROM flt_work_items WHERE id=?").bind(Number(url.pathname.split("/")[2])).first();
   if(!item) return new Response("Work item not found.",{status:404});
+  if(!(await canAccessWorkRecord(env,staff,item))) return await denyAndAudit(env,staff,request,"Set Other Team Deadline");
   if(["Completed","Closed","Cancelled"].includes(item.status)) return new Response("Completed or closed work cannot receive a deadline.",{status:409});
   const form=await request.formData();
   const reason=String(form.get("reason")||"").trim().slice(0,500);
@@ -3667,12 +3662,12 @@ if(request.method==="POST" && /^\/work-routing\/\d+\/deadline$/.test(url.pathnam
   const auditReason=`Manager deadline: due ${schedule.due}; warning ${schedule.warning}. Previous due: ${item.due_at||"not set"}. ${reason}`;
   const results=await env.DB.batch([
     env.DB.prepare(`INSERT INTO flt_work_routing_events(work_item_id,event_type,from_staff_email,to_staff_email,reason,performed_by)
-      SELECT id,'Deadline Set',assigned_staff_email,assigned_staff_email,?,? FROM flt_work_items WHERE id=? AND status=? AND due_at IS ?`)
+      SELECT id,'Deadline Set',assigned_staff_email,assigned_staff_email,?,? FROM flt_work_items WHERE id=? AND status=? AND due_at IS ? AND ${workScopeSQL(staff.user,"flt_work_items")}`)
       .bind(auditReason,staff.email||"Authorized Manager",item.id,item.status,item.due_at),
     env.DB.prepare(`UPDATE flt_work_items SET due_at=?,warning_at=?,sla_minutes=?,deadline_type='Operational',
       escalation_level=0,last_deadline_check_at=NULL,
       status=CASE WHEN status IN ('Deadline Warning','Overdue') THEN CASE WHEN assigned_staff_user_id IS NOT NULL THEN 'Assigned' ELSE 'Escalation Required' END ELSE status END
-      WHERE id=? AND status=? AND due_at IS ?`)
+      WHERE id=? AND status=? AND due_at IS ? AND ${workScopeSQL(staff.user,"flt_work_items")}`)
       .bind(schedule.due,schedule.warning,schedule.minutes,item.id,item.status,item.due_at)
   ]);
   if(!results[1]?.meta?.changes) return new Response("Work changed while saving. Refresh Work Routing and try again.",{status:409});
@@ -10057,7 +10052,7 @@ async fetch(request, env, ctx) {
       await securityAudit(env,staff,request,"Denied","Unknown or inactive staff",correlationId);
       return securityResponse("Authorization required.",403);
     }
-    const decision = await routeAuthorized(env,staff,request,{staffCan,staffHasClientScope,staffHasPropertyScope,canActOnWork:privateWorkAuthorized});
+    const decision = await routeAuthorized(env,staff,request,{staffCan,staffHasClientScope,staffHasPropertyScope});
     if (!decision.allowed) {
       await securityAudit(env,staff,request,"Denied",decision.reason,correlationId);
       return securityResponse(decision.status===404?"Not found.":"Authorization required.",decision.status);
