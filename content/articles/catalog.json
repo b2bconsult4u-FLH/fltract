@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "description": "Canonical FLTract article catalog. One entry per article; classifications are reusable filters, not duplicate pages.",
+  "articles": [
+    {
+      "id": "florida-property-due-diligence",
+      "title": "Florida Property Due Diligence: What to Verify Before You Commit",
+      "slug": "florida-property-due-diligence",
+      "url": "/landowner-guides/due-diligence/",
+      "status": "published-in-preview",
+      "content_type": "guide",
+      "scope": "statewide",
+      "counties": [],
+      "regions": [],
+      "topics": [
+        "due-diligence",
+        "land-use",
+        "property-records"
+      ],
+      "published_at": null,
+      "updated_at": null,
+      "source_path": "landowner-guides/due-diligence/index.html"
+    },
+    {
+      "id": "florida-flood-risk",
+      "title": "Florida Flood Risk: King Tides, Stormwater and Property Decisions",
+      "slug": "florida-flood-risk",
+      "url": "/landowner-guides/flood-risk/",
+      "status": "published-in-preview",
+      "content_type": "guide",
+      "scope": "statewide",
+      "counties": [],
+      "regions": [],
+      "topics": [
+        "flooding",
+        "coastal-property",
+        "insurance"
+      ],
+      "published_at": null,
+      "updated_at": null,
+      "source_path": "landowner-guides/flood-risk/index.html"
+    }
+  ]
+}
