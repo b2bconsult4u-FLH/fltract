@@ -1,0 +1,10 @@
+import {readFileSync,writeFileSync,mkdirSync} from 'node:fs';
+import {resolve,dirname} from 'node:path';
+const root=process.cwd();
+const {articles}=JSON.parse(readFileSync(resolve(root,'content/articles/catalog.json'),'utf8'));
+const active=articles.filter(a=>['published-in-preview','published'].includes(a.status));
+const esc=s=>String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
+const slug=s=>String(s).toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
+const groups=new Map([['statewide',active]]);
+for(const a of active){for(const county of a.counties)groups.set('county/'+slug(county),[...(groups.get('county/'+slug(county))||[]),a]);for(const region of a.regions)groups.set('region/'+slug(region),[...(groups.get('region/'+slug(region))||[]),a]);for(const topic of a.topics)groups.set('topic/'+slug(topic),[...(groups.get('topic/'+slug(topic))||[]),a]);}
+for(const [key,items] of groups){const file=resolve(root,'article-index',key,'index.html');const heading=key==='statewide'?'Florida Real Estate Articles':key.replace('/',' — ').replaceAll('-',' ');const cards=items.map(a=>'<article><h2><a href="'+esc(a.url)+'">'+esc(a.title)+'</a></h2><p>'+esc(a.content_type)+' · '+esc(a.scope)+'</p></article>').join('');const html='<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+esc(heading)+' | FLTract</title><link rel="stylesheet" href="/assets/css/site.css"></head><body><header class="site-header"><div class="wrap"><a href="/">FLTract</a> · <a href="/tract-desk/">Tract Desk</a> · <a href="/contact/">Contact</a></div></header><main><section class="page-head"><div class="wrap"><h1>'+esc(heading)+'</h1><p>Florida property information and educational resources.</p></div></section><section><div class="wrap">'+cards+'<p><a href="/contact/">Ask FLTract about your property needs</a></p></div></section></main></body></html>';mkdirSync(dirname(file),{recursive:true});writeFileSync(file,html);console.log(file);}

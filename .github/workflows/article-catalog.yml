@@ -1,0 +1,23 @@
+name: Article catalog integrity
+on:
+  pull_request:
+    paths:
+      - 'content/articles/**'
+      - 'landowner-guides/**'
+      - 'scripts/*article*.mjs'
+      - '.github/workflows/article-catalog.yml'
+  workflow_dispatch:
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node scripts/validate-article-catalog.mjs
+      - run: node scripts/build-article-indexes.mjs
+      - name: Verify generated indexes exist
+        run: test -f article-index/statewide/index.html && test -f article-index/topic/flooding/index.html
