@@ -22,4 +22,4 @@ Use `scope: statewide` for Florida-wide issues. Use `scope: regional` or `scope:
 - Slugs and canonical URLs are permanent once published; use redirects for any later URL change.
 - Content is informational and must preserve the approved FLTract referral-only brokerage disclosure and a relevant inquiry CTA.
 - Do not put client inquiries, personal information, or unpublished lead records in this public catalog.
-- The catalog is a foundation. **Automated generation of public category pages and deployment verification are not implemented by this change.**
+- The catalog is a foundation. **A generator and PR validation workflow are included, but generated pages must still be incorporated into the deployment build and verified in a browser before public release.**
