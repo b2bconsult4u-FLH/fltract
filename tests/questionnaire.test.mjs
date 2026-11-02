@@ -94,3 +94,18 @@ test('stale concurrent completion does not send a second office email',async()=>
  assert.equal([...f.records.values()][0].status,'Completed');
  assert.equal(f.sent.length,0);
 });
+
+test('same-origin browser POST is accepted and different-origin POST is blocked',async()=>{
+ const f=fixture('seller',false);
+ const url=await createInvitation(f.db,91,'Selling Property','https://intake.example.com');
+ const token=new URL(url).searchParams.get('token');
+ const same=submit(token,{intent:'save',authority:'Owner'});
+ same.headers.set('Origin','https://intake.example.com');
+ const accepted=await handleQuestionnaire(same,f.env);
+ assert.equal(accepted.status,200);
+ assert.equal([...f.records.values()][0].status,'Partially Completed');
+ const other=submit(token,{intent:'complete',authority:'Owner',sharing:'yes'});
+ other.headers.set('Origin','https://fltract.com');
+ assert.equal((await handleQuestionnaire(other,f.env)).status,403);
+ assert.equal([...f.records.values()][0].status,'Partially Completed');
+});
